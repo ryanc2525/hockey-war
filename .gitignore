@@ -1,0 +1,17 @@
+# Raw data (download from MoneyPuck, don't republish)
+data/*.csv
+data/*.xlsx
+
+# Jupyter / Python junk
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+
+# Mac
+.DS_Store
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# VS Code local settings (contain paths specific to this Mac)
+.vscode/
