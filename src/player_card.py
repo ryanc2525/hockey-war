@@ -23,7 +23,8 @@ MIN_EV_TOI = 200  # minutes at 5v5 to qualify; below this the card is drawn fain
 
 # ---------------------------------------------------------------------------
 # Card metrics. direction: "high" = higher is better, "low" = lower is better,
-# "style" = describes how he plays, not good or bad (drawn in gray).
+# "style" = describes how he plays, not good or bad (drawn in gray),
+# "context" = mostly reflects his team, not him (drawn in gray; percentile ranks lower = better).
 # ---------------------------------------------------------------------------
 SECTIONS = [
     ("Value", [
@@ -45,7 +46,7 @@ SECTIONS = [
     ]),
     ("Defense  (5v5)", [
         ("ev_rel_xga_60", "xGA/60 vs. team on bench", "high", "{:+.2f}"),
-        ("onice_xga_60",  "On-ice xGA/60",            "low",  "{:.2f}"),
+        ("onice_xga_60",  "On-ice xGA/60",            "context", "{:.2f}"),
     ]),
     ("Stuff  (5v5, per 60)", [
         ("hits_60",   "Hits",                    "style", "{:.1f}"),
@@ -58,7 +59,7 @@ SECTIONS = [
 
 EDGE_ROWS = [
     ("top_speed",  "Top skating speed (mph)",       "{:.1f}"),
-    ("bursts_20",  "Bursts over 20 mph (season)",   "{:.0f}"),
+    ("bursts_20_60", "Bursts over 20 mph (per 60)", "{:.2f}"),
     ("shot_speed", "Top shot speed (mph)",          "{:.1f}"),
     ("oz_pct_ev",  "Offensive zone time (EV)",      "{:.0%}"),
 ]
@@ -109,7 +110,7 @@ def percentile_in(values, pool, direction):
     lo = np.searchsorted(pool, values, side="left")
     hi = np.searchsorted(pool, values, side="right")
     pct = (lo + hi) / 2 / len(pool) * 100
-    if direction == "low":
+    if direction in ("low", "context"):
         pct = 100 - pct
     pct = np.clip(np.round(pct), 1, 100)
     return np.where(np.isnan(values), np.nan, pct)
@@ -166,12 +167,22 @@ def parse_edge(data):
     }
 
 
+def add_bio(cards, bio_table):
+    """Merge age and draft details (edge_data.build_bio_table) into the card table."""
+    from edge_data import draft_text
+    m = cards.drop(columns=[c for c in bio_table.columns if c != "playerId" and c in cards.columns])
+    m = m.merge(bio_table, on="playerId", how="left")
+    m["draft_text"] = m.apply(draft_text, axis=1)
+    return m
+
+
 def add_edge(cards, edge_table):
     """Merge saved EDGE data (edge_data.build_table) into the card table and add our own percentiles,
     computed the same way as every other row: vs. qualified players at the same position."""
     m = cards.drop(columns=[c for c in edge_table.columns if c != "playerId" and c in cards.columns])
     m = m.merge(edge_table, on="playerId", how="left")
     m["has_edge"] = m["has_edge"].fillna(False).astype(bool)
+    m["bursts_20_60"] = rate60(m["bursts_20"], m["all_toi"])     # per 60 so short seasons compare fairly
     for key, _, _ in EDGE_ROWS:
         m[f"pct_{key}"] = np.nan
         for pos in ["F", "D"]:
@@ -209,7 +220,7 @@ def draw_card(player, season_label, edge=None, path=None):
     alpha = 1.0 if player["qualified"] else 0.35
     n_rows = sum(len(r) for _, r in SECTIONS) + len(EDGE_ROWS) + 2      # +2 for the clutch row and spacing
     n_heads = len(SECTIONS) + 2
-    height = 2.3 + 0.36 * n_rows + 0.5 * n_heads
+    height = 2.7 + 0.36 * n_rows + 0.5 * n_heads
     fig = plt.figure(figsize=(8.5, height), facecolor=SURFACE)
     ax = fig.add_axes([0, 0, 1, 1])      # 1 unit of y = 1 inch, so rows keep their spacing
     ax.set_facecolor(SURFACE)
@@ -223,9 +234,15 @@ def draw_card(player, season_label, edge=None, path=None):
     ax.text(0.04, y, player["name"], fontsize=22, fontweight="bold", color=INK, va="center")
     ax.text(0.96, y, f"{player['war']:.1f} WAR", fontsize=20, fontweight="bold", color=INK, va="center", ha="right")
     y -= 0.45
-    ax.text(0.04, y, f"{player['team']}  ·  {player['position']}  ·  {season_label}", fontsize=11, color=MUTED, va="center")
+    bits = [player["team"], player["position"], season_label]
+    if "age" in player.index and not pd.isna(player["age"]):
+        bits.append(f"Age {player['age']:.0f}")
+    ax.text(0.04, y, "  ·  ".join(bits), fontsize=11, color=MUTED, va="center")
     ax.text(0.96, y, f"#{player['war_rank_pos']:.0f} among {pos_name}  ·  #{player['war_rank']:.0f} overall",
             fontsize=10, color=MUTED, va="center", ha="right")
+    if "draft_text" in player.index and isinstance(player["draft_text"], str):
+        y -= 0.36
+        ax.text(0.04, y, player["draft_text"], fontsize=10, color=MUTED, va="center")
     y -= 0.42
     mins, secs = divmod(round(player["toi_per_gp"] * 60), 60)
     ax.text(0.04, y, f"GP {player['games_played']:.0f}    G {player['goals']:.0f}    A {player['assists']:.0f}    "
@@ -244,9 +261,12 @@ def draw_card(player, season_label, edge=None, path=None):
         y = heading(title, y)
         for col, label, direction, fmt in rows:
             pct = player[f"pct_{col}"]
-            color = STYLE_GRAY if direction == "style" else (DIVERGING(pct / 100) if not np.isnan(pct) else TRACK)
+            gray = direction in ("style", "context")
+            color = STYLE_GRAY if gray else (DIVERGING(pct / 100) if not np.isnan(pct) else TRACK)
             if direction == "style":
                 label = f"{label}  (style)"
+            elif direction == "context":
+                label = f"{label}  (team context)"
             _row(ax, y, label, fmt.format(player[col]) if not np.isnan(player[col]) else "–", pct, color, alpha)
             y -= 0.36
         y -= 0.14
@@ -271,7 +291,7 @@ def draw_card(player, season_label, edge=None, path=None):
     y -= 0.6
     source = " (EDGE percentiles from the NHL)" if (edge and not from_file) else ""
     ax.text(0.04, y, f"Percentiles vs. qualified players at the same position{source}.\n"
-                     "Red = better, blue = worse, gray = style (not good or bad). Data: MoneyPuck.com, NHL EDGE.",
+                     "Red = better, blue = worse, gray = style or team context (not a rating). Data: MoneyPuck.com, NHL EDGE.",
             fontsize=7.5, color=MUTED, va="top")
     bottom = y - 0.5
     ax.set_ylim(bottom, height)
