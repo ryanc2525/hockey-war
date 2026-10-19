@@ -2,6 +2,9 @@
 data/*.csv
 data/*.xlsx
 
+# Raw NHL EDGE downloads (one JSON per player, rebuildable)
+data/edge_raw/
+
 # Jupyter / Python junk
 .ipynb_checkpoints/
 __pycache__/

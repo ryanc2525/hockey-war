@@ -57,10 +57,10 @@ SECTIONS = [
 ]
 
 EDGE_ROWS = [
-    ("top_speed",  "Top skating speed (mph)", "{:.1f}"),
-    ("bursts_20",  "Bursts over 20 mph",      "{:.0f}"),
-    ("shot_speed", "Top shot speed (mph)",    "{:.1f}"),
-    ("oz_pct",     "Offensive zone time",     "{:.0%}"),
+    ("top_speed",  "Top skating speed (mph)",       "{:.1f}"),
+    ("bursts_20",  "Bursts over 20 mph (season)",   "{:.0f}"),
+    ("shot_speed", "Top shot speed (mph)",          "{:.1f}"),
+    ("oz_pct_ev",  "Offensive zone time (EV)",      "{:.0%}"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,8 +162,23 @@ def parse_edge(data):
         "top_speed":  (get("skatingSpeed", "speedMax", "imperial"), 100 * get("skatingSpeed", "speedMax", "percentile")),
         "bursts_20":  (get("skatingSpeed", "burstsOver20", "value"), 100 * get("skatingSpeed", "burstsOver20", "percentile")),
         "shot_speed": (get("topShotSpeed", "imperial"), 100 * get("topShotSpeed", "percentile")),
-        "oz_pct":     (get("zoneTimeDetails", "offensiveZonePctg"), 100 * get("zoneTimeDetails", "offensiveZonePercentile")),
+        "oz_pct_ev":  (get("zoneTimeDetails", "offensiveZoneEvPctg"), 100 * get("zoneTimeDetails", "offensiveZoneEvPercentile")),
     }
+
+
+def add_edge(cards, edge_table):
+    """Merge saved EDGE data (edge_data.build_table) into the card table and add our own percentiles,
+    computed the same way as every other row: vs. qualified players at the same position."""
+    m = cards.drop(columns=[c for c in edge_table.columns if c != "playerId" and c in cards.columns])
+    m = m.merge(edge_table, on="playerId", how="left")
+    m["has_edge"] = m["has_edge"].fillna(False).astype(bool)
+    for key, _, _ in EDGE_ROWS:
+        m[f"pct_{key}"] = np.nan
+        for pos in ["F", "D"]:
+            at_pos = m["pos_group"] == pos
+            pool = m.loc[at_pos & m["qualified"] & m["has_edge"], key].to_numpy(dtype=float)
+            m.loc[at_pos, f"pct_{key}"] = percentile_in(m.loc[at_pos, key].to_numpy(dtype=float), pool, "high")
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +252,14 @@ def draw_card(player, season_label, edge=None, path=None):
         y -= 0.14
 
     y = heading("Skating and shot  (NHL EDGE)", y)
+    from_file = edge is None and f"pct_{EDGE_ROWS[0][0]}" in player.index
     for key, label, fmt in EDGE_ROWS:
-        val, pct = edge.get(key, (np.nan, np.nan)) if edge else (np.nan, np.nan)
+        if from_file:                       # saved EDGE data with our own percentiles (add_edge)
+            val, pct = float(player[key]), float(player[f"pct_{key}"])
+        elif edge:                          # live fetch, NHL's percentiles
+            val, pct = edge.get(key, (np.nan, np.nan))
+        else:
+            val, pct = np.nan, np.nan
         color = DIVERGING(pct / 100) if not np.isnan(pct) else TRACK
         _row(ax, y, label, fmt.format(val) if not np.isnan(val) else "–", pct, color, alpha)
         y -= 0.36
@@ -248,7 +269,8 @@ def draw_card(player, season_label, edge=None, path=None):
     ax.text(0.04, y, "Coming in v1.1", fontsize=10, color=MUTED, va="center", style="italic")
 
     y -= 0.6
-    ax.text(0.04, y, "Percentiles vs. qualified players at the same position (EDGE percentiles from the NHL).\n"
+    source = " (EDGE percentiles from the NHL)" if (edge and not from_file) else ""
+    ax.text(0.04, y, f"Percentiles vs. qualified players at the same position{source}.\n"
                      "Red = better, blue = worse, gray = style (not good or bad). Data: MoneyPuck.com, NHL EDGE.",
             fontsize=7.5, color=MUTED, va="top")
     bottom = y - 0.5
