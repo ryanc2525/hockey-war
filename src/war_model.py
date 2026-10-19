@@ -1,5 +1,8 @@
 """
-Hockey WAR model (v0.3), packaged as reusable functions.
+Hockey WAR model, packaged as reusable functions.
+
+DEFAULT_PARAMS reproduces v0.3 exactly (kept so older notebooks still match).
+V04_PARAMS is the current single-season model (v0.4).
 
 Same math as notebooks 01 and 04, but written once so it can run on any
 MoneyPuck season-level skaters file:
@@ -46,6 +49,11 @@ SIT_MAP = {"all": "all", "5on5": "ev", "5on4": "pp", "4on5": "pk"}
 
 COMPONENTS = ["ev_off_gar", "pp_off_gar", "ev_def_gar", "pk_def_gar", "pen_gar", "fo_gar"]
 
+
+V03_PARAMS = DEFAULT_PARAMS
+
+# v0.4: single-season WAR measures what happened, so goals above expected count fully
+V04_PARAMS = {**DEFAULT_PARAMS, "finish_weight": 1.0}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -181,6 +189,12 @@ def compute_war(players, params=DEFAULT_PARAMS):
 
     p["gar"] = p[COMPONENTS].sum(axis=1)
     p["war"] = p["gar"] / params["goals_per_win"]
+
+    # Split for the player card: offense + defense + other = total WAR
+    gpw = params["goals_per_win"]
+    p["off_war"] = (p["ev_off_gar"] + p["pp_off_gar"]) / gpw
+    p["def_war"] = (p["ev_def_gar"] + p["pk_def_gar"]) / gpw
+    p["other_war"] = (p["pen_gar"] + p["fo_gar"]) / gpw
     p["war_rank"] = p["war"].rank(ascending=False, method="min").astype(int)
     return p
 
