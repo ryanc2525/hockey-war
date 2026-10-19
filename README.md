@@ -1,81 +1,122 @@
 # Hockey WAR: Wins Above Replacement for NHL Skaters
 
-**Status: in progress. Current model: v0.3 (2025-26 season)**
+**Status: in progress. Current model: v0.4. Player cards: 2025-26.**
 
-Can one number capture how much a hockey player is worth to his team, combining offense, defense, special teams, and discipline, and express it in wins? Baseball has WAR (Wins Above Replacement). This project builds a simplified hockey version from public data.
+Can one number capture how much a hockey player helped his team win in a season, combining offense, defense, special teams, and discipline? Baseball has WAR (Wins Above Replacement). This project builds a hockey version from public data, then puts it on Baseball Savant-style player cards.
 
-## Results (v0.3)
+The project has two parts:
 
-![Top 15 skaters by WAR, 2025-26, v0.3](images/war_top15_v03.png)
+| | **Almanac** (now) | **Forecast** (later) |
+|---|---|---|
+| Question | How well did he play *this season*? | How will he play *next season*? |
+| Output | Single-season WAR and player cards | Projections with a best case, worst case, and most likely range |
+| Data | One season at a time | Career history, aging curves, regression to the mean |
 
-**Key findings so far:**
-- **Connor McDavid is #1 at 5.1 WAR**, more than a full win ahead of #2. He leads the league in power play value and is 7th in even-strength offense.
-- **Cole Caufield ranks #2**, driven by 33 even-strength goals on about 18 expected goals. Scoring that far above expected rarely repeats, so this is the result I trust least. Multi-season data should settle it.
-- **Elite defensemen took a hit once the model got more careful.** Lane Hutson was #1 in v0.1 and is #9 now, mostly because the defense measurement was cut to half weight for being noisy.
-- **The defense stat is the model's weakest piece.** It penalizes stars who face the other team's top lines. Nathan MacKinnon is #1 in even-strength offense but ranks 932nd of 940 in even-strength defense, which holds him at #4 overall.
+## Player cards
+
+![Moritz Seider, 2025-26](images/cards/seider_2025-26.png)
+
+Each card shows WAR (split into offense, defense, and other) plus percentile bars for scoring, playmaking, defense, "stuff" (hits, blocks, takeaways), and skating and shot speed from NHL EDGE.
+- **Percentiles** compare a player to qualified players at his position (200+ minutes at 5-on-5). Players below that still get a card, drawn faint.
+- **Red = better, blue = worse.** Gray rows are context, not a rating: style stats like hits, and team-driven stats like on-ice chances against.
+- **Header** shows age and draft position, so a 20-year-old #2 pick on a bad team reads differently than a 30-year-old veteran.
+
+## Results (v0.4, 2025-26)
+
+![Top 15 skaters by WAR, 2025-26, v0.4](images/war_top15_v04.png)
+
+- **Cole Caufield is #1 at 6.2 WAR,** just ahead of Connor McDavid (6.1). Caufield scored about 15 more even-strength goals than expected. Almanac measures what happened, so those goals count. Whether he can repeat it is a Forecast question, but five seasons of data say he is a real finisher: he beat his expected goals in 4 of 5 seasons (+32 total).
+- **McDavid is 3rd in power play value** and has 99th-percentile skating speed.
+- **Nathan MacKinnon has the most offensive value of anyone** but one of the worst defensive ratings, which keeps him at #3.
+- **Moritz Seider has the best defensive rating of any defenseman.**
+
+## What five seasons of data showed
+
+![Which stats are skill, and which skills win](images/skill_vs_value.png)
+
+Using 2021-22 to 2025-26, every stat got two tests: is it **repeatable** from one season to the next (skill, not luck), and does it predict **winning** (next season's goal differential)?
+- **Points are real skill and tied to winning.** For forwards, points predict next season's goal differential better than expected goals do.
+- **Hits and blocks are very repeatable but not tied to winning.** They describe a player's role and style, so they're shown on the card in gray and left out of WAR.
+- **Actual goals and expected goals together predict future scoring better than either one alone.** This is the starting point for Forecast.
 
 ## How the model changed across versions
 
-Each version changes one or two things so the effect of every change is visible. The chart shows where the v0.2 top 15 ranked in v0.1.
-
-![How the v0.2 top 15 ranked in v0.1](images/rank_change_v01_v02.png)
-
 | Version | What changed | What it fixed or revealed |
 |---|---|---|
-| **v0.1** | Even-strength offense, even-strength defense, penalties | 14 of the top 20 were defensemen. MacKinnon was #116 and Kucherov #256, which is obviously wrong. |
-| **v0.2** | Added power play, penalty kill, finishing, faceoffs. Defense cut to half weight. | McDavid to #1, MacKinnon to #3. Defensemen in the top 20 dropped from 14 to 4. |
-| **v0.3** | Finishing weight lowered from 0.5 to 0.3 | Rankings barely moved (rank correlation 0.99 with v0.2). Caufield stayed #2, which pointed to the defense stat as the bigger issue. |
-
-Full notebooks: [`01_data_prep`](notebooks/01_data_prep.ipynb), [`02_war_model`](notebooks/02_war_model.ipynb) (v0.1), [`03_war_model_v02`](notebooks/03_war_model_v02.ipynb), [`04_war_model_v03`](notebooks/04_war_model_v03.ipynb).
+| **v0.1** | Even-strength offense, even-strength defense, penalties | 14 of the top 20 were defensemen. MacKinnon was #116, which is obviously wrong. |
+| **v0.2** | Added power play, penalty kill, finishing, faceoffs. Defense cut to half weight. | McDavid to #1. Defensemen in the top 20 dropped from 14 to 4. |
+| **v0.3** | Finishing weight lowered from 0.5 to 0.3 | Rankings barely moved, which pointed to the defense stat as the bigger issue. |
+| **v0.4** | Goals above expected count fully. WAR split into offense, defense, and other. | Team WAR matches team goal differential better than v0.3 (average correlation 0.79 vs. 0.77). Three alternative defense stats were tested; none was meaningfully better. |
 
 ## How it works
 
-1. **Data:** MoneyPuck season-level skater stats, split into even strength (5v5), power play, and penalty kill.
+1. **Data:** MoneyPuck season-level skater stats, split into even strength (5v5), power play, and penalty kill. Skating and shot speed, age, and draft position from the NHL's public data.
 2. **Components,** each measured in goals above a replacement-level player in the same minutes:
-   - Even-strength offense: shot quality created, finishing, and primary assists
+   - Even-strength offense: shot quality created, goals above expected, and primary assists
    - Power play offense: same method, power play minutes only
    - Even-strength defense: how much better the team defends with him on the ice than on the bench (half weight)
-   - Penalty kill defense: on-ice chances allowed compared to his team's PK (half weight)
+   - Penalty kill defense: chances allowed compared to his team's penalty kill (half weight)
    - Penalties drawn minus taken, and faceoffs for centers
 3. **Replacement level:** players outside each team's top 13 forwards and 7 defensemen by ice time.
 4. **Goals to wins:** about 6 goals of goal differential equals 1 win.
+
+## Notebooks
+
+| # | Notebook | What it does |
+|---|---|---|
+| 01 | [`data_prep`](notebooks/01_data_prep.ipynb) | Reshape MoneyPuck data, one row per player |
+| 02 | [`war_model`](notebooks/02_war_model.ipynb) | v0.1 |
+| 03 | [`war_model_v02`](notebooks/03_war_model_v02.ipynb) | v0.2 |
+| 04 | [`war_model_v03`](notebooks/04_war_model_v03.ipynb) | v0.3 |
+| 05 | [`multi_season`](notebooks/05_multi_season.ipynb) | Five seasons, skill vs. value tests, the Caufield question |
+| 06 | [`war_model_v04`](notebooks/06_war_model_v04.ipynb) | v0.4, team validation, defense alternatives |
+| 07 | [`player_cards`](notebooks/07_player_cards.ipynb) | Percentile table and the first cards |
+| 08 | [`edge_data`](notebooks/08_edge_data.ipynb) | Download NHL EDGE data and player profiles |
+
+The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
 ## How this was built
 
 **v1** was my own code, written by hand for a class project at Michigan State (CMSE 201, Spring 2025). It's kept in [`archive/`](archive/). It had real problems: made-up weights, a replacement level that was really the average of good players, double-counted stats, a couple of calculation bugs, and an output that wasn't actually in wins.
 
-**v2 (v0.1 to v0.3)** was built with Claude (Anthropic's AI) as a coding partner. Claude wrote most of the code. I chose the questions, made the modeling decisions, reviewed and ran every version, and checked the results against what I know about hockey.
+**v2 (v0.1 onward)** was built with Claude (Anthropic's AI) as a coding partner. Claude wrote most of the code. I chose the questions, made the modeling decisions, reviewed and ran every version, and checked the results against what I know about hockey.
 
-Problems found along the way:
+Problems found and decisions made along the way:
 - **Stars ranked absurdly low in v0.1** (I caught this). MacKinnon at #116 led to adding special teams and finishing.
-- **The defense stat punished stars** (I caught this by comparing components). It's why defense now counts at half weight.
-- **Caufield at #2 looked suspicious** (I caught this). It led to lowering the finishing weight in v0.3, and showed the defense stat was the real issue.
-- **Penalty kill selection bias** (caught by Claude while testing). The first penalty kill method rated elite penalty killers below replacement, because top killers take the hardest shifts and fringe killers get easy ones. It was rebuilt to compare each player against his own team's penalty kill.
+- **The defense stat punished stars** (I caught this by comparing components). It's why defense counts at half weight.
+- **Caufield at #2 looked suspicious** (I flagged it). Five seasons of data showed he really is an elite finisher, which shaped how v0.4 treats goals.
+- **Splitting the project into Almanac and Forecast** (my decision). One-year wonders are real seasons, so single-season WAR should count them. Predicting whether they repeat is a separate job.
+- **Penalty kill selection bias** (caught by Claude while testing). The first method rated elite penalty killers below replacement, because top killers take the hardest shifts. It was rebuilt to compare each player against his own team's penalty kill.
+- **Mixing forwards and defensemen inflated the repeatability numbers** (caught by Claude). The tests are now run by position.
+- **Card review** (me). I checked cards for 10 players I know well. That led to adding age and draft position, counting skating bursts per 60 minutes, and showing team-driven stats as context instead of a rating.
 
 ## Limitations
 
-- The defense stat partly measures linemates and quality of competition, not just the player.
-- One season of data. Finishing in particular is noisy year to year.
-- Constants (goals per win, penalty value, faceoff value, assist and finishing weights) are approximations.
-- Goalies are not included. Traded players are listed under one team.
+- The defense stat partly measures linemates and opponents, not just the player. Fixing that needs shift-level data.
+- Constants (goals per win, penalty value, faceoff value, assist weight) are approximations.
+- Goalies are not included.
+- Traded players are listed under their final team. Their stats cover the full season, but the replacement-level and penalty kill comparisons only use the last team.
 
 ## Roadmap
 
-The end goal is a web app where you can manage an NHL team up to 3 seasons into the future:
+**Almanac v1.0**
+- [x] Single-season WAR, split into offense, defense, and other
+- [x] Player cards with percentiles, faint below the sample threshold
+- [x] Skating and shot speed (NHL EDGE), age, and draft position
+- [ ] Search any player and see his card (Streamlit app)
+- [ ] All five seasons (2021-22 to 2025-26)
+- [ ] Live at a public link
 
-- **Multi-season data and a reusable model** (next)
-- **Fix the defense metric** (v0.4)
-- **Aging curves:** project how players improve or decline with age
-- **Bust / breakout factor:** model the uncertainty for young players
-- **Player cards:** percentile breakdowns for each player
-- **Team builder:** make trades and sign contracts, then see how projected team WAR and cap space change
-- **Season simulator:** simulate seasons up to 3 years out based on the roster you build
+**Almanac v1.1:** clutch stats (late-game, overtime, and 6-on-5 goals), tested for whether clutch is a repeatable skill or a story fans tell.
+
+**Forecast:** aging curves, regression to the mean, and projection ranges, then a team builder and a season simulator.
 
 ## Data
 
-Data comes from [MoneyPuck.com](https://moneypuck.com/data.htm). Raw data is not included in this repo. To run the notebooks, download the 2025-26 season-level skaters CSV from MoneyPuck and save it in `data/` (see [`data/README.md`](data/README.md)).
+- **[MoneyPuck.com](https://moneypuck.com/data.htm):** season-level skater stats. Raw data is not included in this repo (see [`data/README.md`](data/README.md)).
+- **NHL EDGE and player profiles** (api-web.nhle.com): downloaded by notebook 08 and kept locally.
 
-**Credit:** All player data is from MoneyPuck.com.
+**Credit:** player stats from MoneyPuck.com. Skating, shot speed, and player profiles from the NHL.
 
 ## Tools
 
@@ -86,9 +127,10 @@ Python (pandas, NumPy, matplotlib), Jupyter, VS Code, Git. Built with Claude as 
 ```
 hockey-war/
 ├── archive/      original class version (v1)
-├── data/         put the MoneyPuck CSV here (not tracked)
-├── images/       charts generated by the notebooks
-├── notebooks/    v2 analysis, one notebook per step or version
+├── data/         MoneyPuck CSVs and downloaded NHL data go here (not tracked)
+├── images/       charts and player cards generated by the notebooks
+├── notebooks/    analysis, one notebook per step or version
+├── src/          WAR model, player card, and NHL data code
 └── README.md
 ```
 
