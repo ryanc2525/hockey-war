@@ -1,0 +1,259 @@
+"""
+Almanac player cards: percentile tables and a Baseball Savant-style card.
+
+    from player_card import build_metrics, add_percentiles, fetch_edge, draw_card
+
+Percentiles compare each player to qualified players at his position
+(forwards vs. forwards, defensemen vs. defensemen) in the same season.
+
+Data: MoneyPuck.com (season stats) and NHL EDGE (skating and shot speed).
+"""
+
+import json
+import urllib.request
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+
+from war_model import rate60
+
+MIN_EV_TOI = 200  # minutes at 5v5 to qualify; below this the card is drawn faint
+
+# ---------------------------------------------------------------------------
+# Card metrics. direction: "high" = higher is better, "low" = lower is better,
+# "style" = describes how he plays, not good or bad (drawn in gray).
+# ---------------------------------------------------------------------------
+SECTIONS = [
+    ("Value", [
+        ("war",       "Total WAR",               "high",  "{:.1f}"),
+        ("off_war",   "Offensive WAR",           "high",  "{:.1f}"),
+        ("def_war",   "Defensive WAR",           "high",  "{:.1f}"),
+        ("other_war", "Other WAR (pen + FO)",    "high",  "{:.1f}"),
+    ]),
+    ("Scoring  (5v5, per 60)", [
+        ("g_60",      "Goals",                   "high",  "{:.2f}"),
+        ("ixg_60",    "Expected goals",          "high",  "{:.2f}"),
+        ("sog_60",    "Shots on goal",           "high",  "{:.1f}"),
+        ("fin_60",    "Finishing (G minus xG)",  "high",  "{:+.2f}"),
+    ]),
+    ("Playmaking  (5v5, per 60)", [
+        ("a1_60",     "Primary assists",         "high",  "{:.2f}"),
+        ("a_60",      "All assists",             "high",  "{:.2f}"),
+        ("pts_60",    "Points",                  "high",  "{:.2f}"),
+    ]),
+    ("Defense  (5v5)", [
+        ("ev_rel_xga_60", "xGA/60 vs. team on bench", "high", "{:+.2f}"),
+        ("onice_xga_60",  "On-ice xGA/60",            "low",  "{:.2f}"),
+    ]),
+    ("Stuff  (5v5, per 60)", [
+        ("hits_60",   "Hits",                    "style", "{:.1f}"),
+        ("blk_60",    "Blocked shots",           "style", "{:.1f}"),
+        ("take_60",   "Takeaways",               "high",  "{:.2f}"),
+        ("give_60",   "Giveaways",               "low",   "{:.2f}"),
+        ("pend_60",   "Penalties drawn (all)",   "high",  "{:.2f}"),
+    ]),
+]
+
+EDGE_ROWS = [
+    ("top_speed",  "Top skating speed (mph)", "{:.1f}"),
+    ("bursts_20",  "Bursts over 20 mph",      "{:.0f}"),
+    ("shot_speed", "Top shot speed (mph)",    "{:.1f}"),
+    ("oz_pct",     "Offensive zone time",     "{:.0%}"),
+]
+
+# ---------------------------------------------------------------------------
+# 1. Metrics table
+# ---------------------------------------------------------------------------
+RAW_EXTRA = ["I_F_shotsOnGoal", "I_F_hits", "shotsBlockedByPlayer", "I_F_takeaways", "I_F_giveaways"]
+
+
+def build_metrics(war_table, raw_path):
+    """One row per player with every card metric. war_table = output of run_season."""
+    raw = pd.read_csv(raw_path)
+    ev = (raw.loc[raw["situation"] == "5on5", ["playerId"] + RAW_EXTRA]
+             .rename(columns={c: f"ev_{c}" for c in RAW_EXTRA}))
+    m = war_table.merge(ev, on="playerId", how="left")
+    t = m["ev_toi"]
+
+    m["g_60"] = rate60(m["ev_I_F_goals"], t)
+    m["ixg_60"] = rate60(m["ev_I_F_xGoals"], t)
+    m["sog_60"] = rate60(m["ev_I_F_shotsOnGoal"], t)
+    m["fin_60"] = rate60(m["ev_I_F_goals"] - m["ev_I_F_xGoals"], t)
+    m["a1_60"] = rate60(m["ev_I_F_primaryAssists"], t)
+    m["a_60"] = rate60(m["ev_I_F_primaryAssists"] + m["ev_I_F_secondaryAssists"], t)
+    m["pts_60"] = rate60(m["ev_I_F_goals"] + m["ev_I_F_primaryAssists"] + m["ev_I_F_secondaryAssists"], t)
+    m["onice_xga_60"] = rate60(m["ev_OnIce_A_xGoals"], t)
+    m["hits_60"] = rate60(m["ev_I_F_hits"], t)
+    m["blk_60"] = rate60(m["ev_shotsBlockedByPlayer"], t)
+    m["take_60"] = rate60(m["ev_I_F_takeaways"], t)
+    m["give_60"] = rate60(m["ev_I_F_giveaways"], t)
+    m["pend_60"] = rate60(m["all_penaltiesDrawn"], m["all_toi"])
+
+    # Season totals for the card header (all situations)
+    m["goals"] = m["all_I_F_goals"]
+    m["assists"] = m["all_I_F_primaryAssists"] + m["all_I_F_secondaryAssists"]
+    m["points"] = m["goals"] + m["assists"]
+    m["toi_per_gp"] = m["all_toi"] / m["games_played"]
+    m["qualified"] = m["ev_toi"] >= MIN_EV_TOI
+    return m
+
+
+# ---------------------------------------------------------------------------
+# 2. Percentiles (vs. qualified players at the same position)
+# ---------------------------------------------------------------------------
+def percentile_in(values, pool, direction):
+    """Percentile (1-100) of each value within pool. Ties get the midpoint."""
+    pool = np.sort(pool[~np.isnan(pool)])
+    lo = np.searchsorted(pool, values, side="left")
+    hi = np.searchsorted(pool, values, side="right")
+    pct = (lo + hi) / 2 / len(pool) * 100
+    if direction == "low":
+        pct = 100 - pct
+    pct = np.clip(np.round(pct), 1, 100)
+    return np.where(np.isnan(values), np.nan, pct)
+
+
+def add_percentiles(metrics):
+    """Add a pct_<metric> column for every card metric."""
+    m = metrics.copy()
+    for _, rows in SECTIONS:
+        for col, _, direction, _ in rows:
+            m[f"pct_{col}"] = np.nan
+            for pos in ["F", "D"]:
+                at_pos = m["pos_group"] == pos
+                pool = m.loc[at_pos & m["qualified"], col].to_numpy(dtype=float)
+                m.loc[at_pos, f"pct_{col}"] = percentile_in(m.loc[at_pos, col].to_numpy(dtype=float), pool, direction)
+    m["war_rank_pos"] = m.groupby("pos_group")["war"].rank(ascending=False, method="min")
+    return m
+
+
+# ---------------------------------------------------------------------------
+# 3. NHL EDGE (skating and shot speed). Percentiles come from the NHL.
+# ---------------------------------------------------------------------------
+def fetch_edge(player_id, season="20252026", game_type=2):
+    """Return {metric: (value, percentile 0-100)} from NHL EDGE, or None if unavailable."""
+    url = f"https://api-web.nhle.com/v1/edge/skater-detail/{player_id}/{season}/{game_type}"
+    # The NHL's server rejects Python's default identity (HTTP 403), so identify as a normal browser
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=15) as resp:
+            data = json.load(resp)
+    except Exception as err:
+        print("NHL EDGE not available:", err)
+        return None
+    return parse_edge(data)
+
+
+def parse_edge(data):
+    def get(*keys):
+        node = data
+        for k in keys:
+            if not isinstance(node, dict) or k not in node:
+                return np.nan
+            node = node[k]
+        return float(node) if node is not None else np.nan
+
+    return {
+        "top_speed":  (get("skatingSpeed", "speedMax", "imperial"), 100 * get("skatingSpeed", "speedMax", "percentile")),
+        "bursts_20":  (get("skatingSpeed", "burstsOver20", "value"), 100 * get("skatingSpeed", "burstsOver20", "percentile")),
+        "shot_speed": (get("topShotSpeed", "imperial"), 100 * get("topShotSpeed", "percentile")),
+        "oz_pct":     (get("zoneTimeDetails", "offensiveZonePctg"), 100 * get("zoneTimeDetails", "offensiveZonePercentile")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. Draw the card
+# ---------------------------------------------------------------------------
+SURFACE, INK, MUTED, TRACK = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e1"
+STYLE_GRAY = "#8f8e88"
+DIVERGING = LinearSegmentedColormap.from_list("savant", ["#2a78d6", "#f0efec", "#e34948"])  # poor -> average -> great
+
+
+def _row(ax, y, label, value_text, pct, color, alpha):
+    x0, x1 = 0.36, 0.82
+    ax.text(0.04, y, label, va="center", ha="left", fontsize=10, color=INK, alpha=alpha)
+    ax.plot([x0, x1], [y, y], color=TRACK, linewidth=6, solid_capstyle="round", zorder=1)
+    if not np.isnan(pct):
+        xe = x0 + (x1 - x0) * pct / 100
+        ax.plot([x0, xe], [y, y], color=color, linewidth=6, solid_capstyle="round", zorder=2, alpha=alpha)
+        ax.scatter([xe], [y], s=330, color=color, edgecolor=SURFACE, linewidth=2, zorder=3, alpha=alpha)
+        dark = pct >= 80 or pct <= 20 or color == STYLE_GRAY
+        text_color = ("white" if dark else INK) if alpha == 1 else MUTED   # faint cards: keep numbers readable
+        ax.text(xe, y, f"{pct:.0f}", va="center", ha="center", fontsize=7 if pct >= 100 else 8, fontweight="bold",
+                color=text_color, zorder=4)
+    ax.text(0.96, y, value_text, va="center", ha="right", fontsize=10, color=MUTED, alpha=alpha)
+
+
+def draw_card(player, season_label, edge=None, path=None):
+    """player = one row (Series) from add_percentiles. edge = output of fetch_edge, or None."""
+    alpha = 1.0 if player["qualified"] else 0.35
+    n_rows = sum(len(r) for _, r in SECTIONS) + len(EDGE_ROWS) + 2      # +2 for the clutch row and spacing
+    n_heads = len(SECTIONS) + 2
+    height = 2.3 + 0.36 * n_rows + 0.5 * n_heads
+    fig = plt.figure(figsize=(8.5, height), facecolor=SURFACE)
+    ax = fig.add_axes([0, 0, 1, 1])      # 1 unit of y = 1 inch, so rows keep their spacing
+    ax.set_facecolor(SURFACE)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, height)
+    ax.axis("off")
+
+    # Header
+    y = height - 0.55
+    pos_name = "defensemen" if player["pos_group"] == "D" else "forwards"
+    ax.text(0.04, y, player["name"], fontsize=22, fontweight="bold", color=INK, va="center")
+    ax.text(0.96, y, f"{player['war']:.1f} WAR", fontsize=20, fontweight="bold", color=INK, va="center", ha="right")
+    y -= 0.45
+    ax.text(0.04, y, f"{player['team']}  ·  {player['position']}  ·  {season_label}", fontsize=11, color=MUTED, va="center")
+    ax.text(0.96, y, f"#{player['war_rank_pos']:.0f} among {pos_name}  ·  #{player['war_rank']:.0f} overall",
+            fontsize=10, color=MUTED, va="center", ha="right")
+    y -= 0.42
+    mins, secs = divmod(round(player["toi_per_gp"] * 60), 60)
+    ax.text(0.04, y, f"GP {player['games_played']:.0f}    G {player['goals']:.0f}    A {player['assists']:.0f}    "
+                     f"P {player['points']:.0f}    TOI/GP {mins}:{secs:02d}", fontsize=10, color=INK, va="center")
+    if not player["qualified"]:
+        ax.text(0.96, y, f"Below {MIN_EV_TOI} 5v5 minutes: small sample", fontsize=9, color=MUTED, va="center", ha="right")
+    y -= 0.25
+    ax.plot([0.04, 0.96], [y, y], color=TRACK, linewidth=1)
+
+    def heading(text, y):
+        ax.text(0.04, y, text.upper(), fontsize=9, fontweight="bold", color=MUTED, va="center")
+        return y - 0.4
+
+    y -= 0.45
+    for title, rows in SECTIONS:
+        y = heading(title, y)
+        for col, label, direction, fmt in rows:
+            pct = player[f"pct_{col}"]
+            color = STYLE_GRAY if direction == "style" else (DIVERGING(pct / 100) if not np.isnan(pct) else TRACK)
+            if direction == "style":
+                label = f"{label}  (style)"
+            _row(ax, y, label, fmt.format(player[col]) if not np.isnan(player[col]) else "–", pct, color, alpha)
+            y -= 0.36
+        y -= 0.14
+
+    y = heading("Skating and shot  (NHL EDGE)", y)
+    for key, label, fmt in EDGE_ROWS:
+        val, pct = edge.get(key, (np.nan, np.nan)) if edge else (np.nan, np.nan)
+        color = DIVERGING(pct / 100) if not np.isnan(pct) else TRACK
+        _row(ax, y, label, fmt.format(val) if not np.isnan(val) else "–", pct, color, alpha)
+        y -= 0.36
+    y -= 0.14
+
+    y = heading("Clutch", y)
+    ax.text(0.04, y, "Coming in v1.1", fontsize=10, color=MUTED, va="center", style="italic")
+
+    y -= 0.6
+    ax.text(0.04, y, "Percentiles vs. qualified players at the same position (EDGE percentiles from the NHL).\n"
+                     "Red = better, blue = worse, gray = style (not good or bad). Data: MoneyPuck.com, NHL EDGE.",
+            fontsize=7.5, color=MUTED, va="top")
+    bottom = y - 0.5
+    ax.set_ylim(bottom, height)
+    fig.set_size_inches(8.5, height - bottom)    # trim unused space at the bottom
+    if path is not None:
+        fig.savefig(path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
+    return fig
