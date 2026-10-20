@@ -17,7 +17,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
-from war_model import rate60
+from war_model import rate60, run_season, V04_PARAMS
 
 MIN_EV_TOI = 200  # minutes at 5v5 to qualify; below this the card is drawn faint
 
@@ -313,9 +313,13 @@ HEADER_COLS = ["playerId", "name", "team", "position", "pos_group", "age", "draf
                "games_played", "goals", "assists", "points", "toi_per_gp", "war_rank", "war_rank_pos"]
 
 
-def app_columns():
-    """Columns the public app needs: playerId, header fields, then each card row and its percentile."""
-    cols = list(HEADER_COLS)
+SEASON_COLS = ["season", "season_label"]
+
+
+def app_columns(by_season=False):
+    """Columns the public app needs: playerId, header fields, then each card row and its percentile.
+    by_season=True adds season and season_label after playerId, for a table with several seasons."""
+    cols = ["playerId"] + (SEASON_COLS if by_season else []) + HEADER_COLS[1:]
     for _, rows in SECTIONS:
         for col, _, _, _ in rows:
             cols += [col, f"pct_{col}"]
@@ -325,11 +329,33 @@ def app_columns():
     return list(dict.fromkeys(cols))       # drop duplicates, keep order
 
 
-def export_app_table(cards, path):
+def export_app_table(cards, path, by_season=False):
     """Write the slim card table for the public app and return it. cards = full card table."""
     from pathlib import Path
     path = Path(path)
-    slim = cards[app_columns()]
+    slim = cards[app_columns(by_season)]
     path.parent.mkdir(parents=True, exist_ok=True)
     slim.to_csv(path, index=False)
     return slim
+
+
+# ---------------------------------------------------------------------------
+# 6. Full card table for one season (the same steps as notebook 08)
+#    season = MoneyPuck start year: 2025 = 2025-26. Display season_label, never the integer.
+# ---------------------------------------------------------------------------
+def season_label(season):
+    """MoneyPuck start year -> display label: 2025 -> '2025-26'."""
+    return f"{season}-{str(season + 1)[-2:]}"
+
+
+def build_season_cards(skaters_path, edge_dir, bio_dir):
+    """Full card table for one season: WAR v0.4, card metrics, percentiles, saved EDGE data,
+    and age and draft (age as of Feb 1 of the season's end year)."""
+    from edge_data import build_table, build_bio_table
+    war = run_season(skaters_path, V04_PARAMS)
+    season = int(war["season"].iloc[0])
+    cards = add_percentiles(build_metrics(war, skaters_path))
+    cards = add_edge(cards, build_table(edge_dir))
+    cards = add_bio(cards, build_bio_table(bio_dir, season + 1))
+    cards["season_label"] = season_label(season)
+    return cards

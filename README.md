@@ -1,8 +1,8 @@
 # Hockey WAR: Wins Above Replacement for NHL Skaters
 
-**Status: in progress. Current model: v0.4. Player cards: 2025-26.**
+**Status: in progress. Current model: v0.4. Player cards: 2021-22 to 2025-26.**
 
-**Live app: [hockey-almanac.streamlit.app](https://hockey-almanac.streamlit.app/).** Search any 2025-26 skater and see his card.
+**Live app: [hockey-almanac.streamlit.app](https://hockey-almanac.streamlit.app/).** Search any 2021-22 to 2025-26 skater and see his card.
 
 Can one number capture how much a hockey player helped his team win in a season, combining offense, defense, special teams, and discipline? Baseball has WAR (Wins Above Replacement). This project builds a hockey version from public data, then puts it on Baseball Savant-style player cards.
 
@@ -76,6 +76,7 @@ Using 2021-22 to 2025-26, every stat got two tests: is it **repeatable** from on
 | 07 | [`player_cards`](notebooks/07_player_cards.ipynb) | Percentile table and the first cards |
 | 08 | [`edge_data`](notebooks/08_edge_data.ipynb) | Download NHL EDGE data and player profiles |
 | 09 | [`app_data`](notebooks/09_app_data.ipynb) | Slim public card table for the app (only what the card draws) |
+| 10 | [`all_seasons`](notebooks/10_all_seasons.ipynb) | Cards for all five seasons, checked against the saved 2025-26 table, and the app's combined table |
 
 The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
@@ -108,11 +109,11 @@ Problems found and decisions made along the way:
 - [x] Player cards with percentiles, faint below the sample threshold
 - [x] Skating and shot speed (NHL EDGE), age, and draft position
 - [x] Search any player and see his card (Streamlit app)
-- [ ] All five seasons (2021-22 to 2025-26)
+- [x] All five seasons (2021-22 to 2025-26)
 - [x] Live at a public link
 
 **Almanac app, after v1.0**
-- [ ] Season picker (needs all five seasons)
+- [x] Season picker (needs all five seasons)
 - [ ] Filters by team and position
 - [ ] Compare two players, with the better stat highlighted
 - [ ] Phone-friendly card layout
