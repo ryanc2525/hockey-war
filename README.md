@@ -2,6 +2,8 @@
 
 **Status: in progress. Current model: v0.4. Player cards: 2025-26.**
 
+**Live app: [hockey-almanac.streamlit.app](https://hockey-almanac.streamlit.app/).** Search any 2025-26 skater and see his card.
+
 Can one number capture how much a hockey player helped his team win in a season, combining offense, defense, special teams, and discipline? Baseball has WAR (Wins Above Replacement). This project builds a hockey version from public data, then puts it on Baseball Savant-style player cards.
 
 The project has two parts:
@@ -20,6 +22,7 @@ Each card shows WAR (split into offense, defense, and other) plus percentile bar
 - **Percentiles** compare a player to qualified players at his position (200+ minutes at 5-on-5). Players below that still get a card, drawn faint.
 - **Red = better, blue = worse.** Gray rows are context, not a rating: style stats like hits, and team-driven stats like on-ice chances against.
 - **Header** shows age and draft position, so a 20-year-old #2 pick on a bad team reads differently than a 30-year-old veteran.
+- **Offensive zone time is hidden for now.** It mostly reflects the team, not the player. It's still calculated and will come back once it's adjusted for team.
 
 ## Results (v0.4, 2025-26)
 
@@ -72,6 +75,7 @@ Using 2021-22 to 2025-26, every stat got two tests: is it **repeatable** from on
 | 06 | [`war_model_v04`](notebooks/06_war_model_v04.ipynb) | v0.4, team validation, defense alternatives |
 | 07 | [`player_cards`](notebooks/07_player_cards.ipynb) | Percentile table and the first cards |
 | 08 | [`edge_data`](notebooks/08_edge_data.ipynb) | Download NHL EDGE data and player profiles |
+| 09 | [`app_data`](notebooks/09_app_data.ipynb) | Slim public card table for the app (only what the card draws) |
 
 The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
@@ -103,9 +107,16 @@ Problems found and decisions made along the way:
 - [x] Single-season WAR, split into offense, defense, and other
 - [x] Player cards with percentiles, faint below the sample threshold
 - [x] Skating and shot speed (NHL EDGE), age, and draft position
-- [ ] Search any player and see his card (Streamlit app)
+- [x] Search any player and see his card (Streamlit app)
 - [ ] All five seasons (2021-22 to 2025-26)
-- [ ] Live at a public link
+- [x] Live at a public link
+
+**Almanac app, after v1.0**
+- [ ] Season picker (needs all five seasons)
+- [ ] Filters by team and position
+- [ ] Compare two players, with the better stat highlighted
+- [ ] Phone-friendly card layout
+- [ ] Bring back offensive zone time, once it's adjusted for team
 
 **Almanac v1.1:** clutch stats (late-game, overtime, and 6-on-5 goals), tested for whether clutch is a repeatable skill or a story fans tell.
 
