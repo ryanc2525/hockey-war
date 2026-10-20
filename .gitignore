@@ -19,3 +19,6 @@ __pycache__/
 
 # VS Code local settings (contain paths specific to this Mac)
 .vscode/
+
+# Claude Code local settings
+.claude/

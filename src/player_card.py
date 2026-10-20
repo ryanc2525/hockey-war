@@ -63,6 +63,7 @@ EDGE_ROWS = [
     ("shot_speed", "Top shot speed (mph)",          "{:.1f}"),
     ("oz_pct_ev",  "Offensive zone time (EV)",      "{:.0%}"),
 ]
+HIDDEN_ROWS = {"oz_pct_ev"}   # still computed and saved by add_edge, just not drawn; remove a key to bring it back
 
 # ---------------------------------------------------------------------------
 # 1. Metrics table
@@ -218,7 +219,8 @@ def _row(ax, y, label, value_text, pct, color, alpha):
 def draw_card(player, season_label, edge=None, path=None):
     """player = one row (Series) from add_percentiles. edge = output of fetch_edge, or None."""
     alpha = 1.0 if player["qualified"] else 0.35
-    n_rows = sum(len(r) for _, r in SECTIONS) + len(EDGE_ROWS) + 2      # +2 for the clutch row and spacing
+    n_edge = sum(key not in HIDDEN_ROWS for key, _, _ in EDGE_ROWS)
+    n_rows = sum(len(r) for _, r in SECTIONS) + n_edge + 2               # +2 for the clutch row and spacing
     n_heads = len(SECTIONS) + 2
     height = 2.7 + 0.36 * n_rows + 0.5 * n_heads
     fig = plt.figure(figsize=(8.5, height), facecolor=SURFACE)
@@ -274,7 +276,9 @@ def draw_card(player, season_label, edge=None, path=None):
     y = heading("Skating and shot  (NHL EDGE)", y)
     from_file = edge is None and f"pct_{EDGE_ROWS[0][0]}" in player.index
     for key, label, fmt in EDGE_ROWS:
-        if from_file:                       # saved EDGE data with our own percentiles (add_edge)
+        if key in HIDDEN_ROWS:
+            continue
+        if from_file:                      # saved EDGE data with our own percentiles (add_edge)
             val, pct = float(player[key]), float(player[f"pct_{key}"])
         elif edge:                          # live fetch, NHL's percentiles
             val, pct = edge.get(key, (np.nan, np.nan))
@@ -299,3 +303,33 @@ def draw_card(player, season_label, edge=None, path=None):
     if path is not None:
         fig.savefig(path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 5. Slim table for the public app. Only the columns the card draws, built from
+#    SECTIONS and EDGE_ROWS so it stays in sync with the card. No raw MoneyPuck stats.
+# ---------------------------------------------------------------------------
+HEADER_COLS = ["playerId", "name", "team", "position", "pos_group", "age", "draft_text", "qualified",
+               "games_played", "goals", "assists", "points", "toi_per_gp", "war_rank", "war_rank_pos"]
+
+
+def app_columns():
+    """Columns the public app needs: playerId, header fields, then each card row and its percentile."""
+    cols = list(HEADER_COLS)
+    for _, rows in SECTIONS:
+        for col, _, _, _ in rows:
+            cols += [col, f"pct_{col}"]
+    for key, _, _ in EDGE_ROWS:
+        if key not in HIDDEN_ROWS:
+            cols += [key, f"pct_{key}"]
+    return list(dict.fromkeys(cols))       # drop duplicates, keep order
+
+
+def export_app_table(cards, path):
+    """Write the slim card table for the public app and return it. cards = full card table."""
+    from pathlib import Path
+    path = Path(path)
+    slim = cards[app_columns()]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    slim.to_csv(path, index=False)
+    return slim
