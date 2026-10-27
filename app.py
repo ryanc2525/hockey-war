@@ -23,18 +23,37 @@ from player_card import draw_card
 from compare import compare_rows, compare_notes, compare_html
 
 CARDS_PATH = ROOT / "app_data" / "cards.csv"
+SHOT_GRID_PATH = ROOT / "app_data" / "shot_grid.csv"        # pre-counted 5 ft cells (notebook 12)
+SHOT_TOTALS_PATH = ROOT / "app_data" / "shot_totals.csv"    # unblocked shots and goals per player-season
 
 
 @st.cache_data
 def load_cards():
     """Read the card table once; Streamlit reruns this script on every click, so cache it.
-    Returns every player-season, plus one row per player for the search list."""
+    Returns every player-season (with shot-map totals), plus one row per player for the search list."""
     cards = pd.read_csv(CARDS_PATH)
+    totals = pd.read_csv(SHOT_TOTALS_PATH)
+    cards = cards.merge(totals, on=["playerId", "season"], how="left")
+    shot_cols = ["unblocked_shots", "unblocked_goals", "oz_shots"]
+    cards[shot_cols] = cards[shot_cols].fillna(0)                 # no unblocked shots that season
     latest = cards.sort_values("season").groupby("playerId").tail(1).set_index("playerId")   # most recent season
     players = latest[["name", "team", "position"]].copy()
     players["total_war"] = cards.groupby("playerId")["war"].sum()
     players = players.sort_values("total_war", ascending=False)
     return cards, players
+
+
+@st.cache_data
+def load_shot_grid():
+    """Shot-map cells indexed by (playerId, season), so one player-season's rows are a quick lookup."""
+    return pd.read_csv(SHOT_GRID_PATH).set_index(["playerId", "season"]).sort_index()
+
+
+def shot_rows(player_id, season):
+    """This player-season's shot-map cells (always a table, possibly empty)."""
+    if (player_id, season) in shot_grid.index:
+        return shot_grid.loc[[(player_id, season)]].reset_index(drop=True)
+    return shot_grid.iloc[:0].reset_index(drop=True)
 
 
 def pick(prefix, label):
@@ -67,6 +86,7 @@ st.title("Hockey WAR player cards")
 st.caption("2021-22 to 2025-26 NHL skaters. Type a name to search. Data: MoneyPuck.com, NHL EDGE.")
 
 cards, players = load_cards()
+shot_grid = load_shot_grid()
 
 a = pick("a", "Player")
 if a is None:
@@ -86,6 +106,7 @@ else:
                 show_card = False
     if show_card:
         with card_slot:
-            fig = draw_card(a, a["season_label"])       # edge=None: uses the saved EDGE columns in the CSV
+            fig = draw_card(a, a["season_label"],       # edge=None: uses the saved EDGE columns in the CSV
+                            shot_grid=shot_rows(int(a["playerId"]), int(a["season"])))
             st.pyplot(fig)
             plt.close(fig)                              # free memory; each pick draws a new figure

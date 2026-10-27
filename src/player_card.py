@@ -208,6 +208,114 @@ SURFACE, INK, MUTED, TRACK = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e1"
 STYLE_GRAY = "#8f8e88"
 DIVERGING = LinearSegmentedColormap.from_list("savant", ["#2a78d6", "#f0efec", "#e34948"])  # poor -> average -> great
 
+# Shot map: one hue that means nothing else on the card (red/blue are better/worse)
+SHOT_CMAP = LinearSegmentedColormap.from_list("shots", [(0, SURFACE), (0.35, "#f8e3b5"), (0.70, "#eeb04a"), (1, "#b8740e")])
+
+# Shot map grid: offensive zone with every shot folded onto one end (net at x = 89), 5 ft cells.
+# y > 0 is the shooter's left, seen from the point looking at the net (checked in notebook 12).
+SHOT_X = (25, 100)                   # blue line to end boards, feet from center ice
+SHOT_Y = (-42.5, 42.5)               # board to board
+SHOT_CELL = 5
+SHOT_NX = int((SHOT_X[1] - SHOT_X[0]) / SHOT_CELL)     # 15 cells deep
+SHOT_NY = int((SHOT_Y[1] - SHOT_Y[0]) / SHOT_CELL)     # 17 cells wide
+SMALL_SHOT_SAMPLE = 50               # unblocked shots; below this the map gets a small-sample note
+MAP_SCALE = 0.04                     # inches per foot on the card: 75 ft deep = 3.0 in, 85 ft wide = 3.4 in
+
+
+def shot_cell(fx, fy):
+    """Grid cell (gx, gy) for folded shot coordinates, clipped to the offensive-zone grid."""
+    gx = np.clip(np.floor((np.asarray(fx, dtype=float) - SHOT_X[0]) / SHOT_CELL), 0, SHOT_NX - 1).astype(int)
+    gy = np.clip(np.floor((np.asarray(fy, dtype=float) - SHOT_Y[0]) / SHOT_CELL), 0, SHOT_NY - 1).astype(int)
+    return gx, gy
+
+
+def _smooth(counts, sigma=1.0):
+    """Light Gaussian blur (sigma in cells), numpy only: across, then down."""
+    r = int(3 * sigma)
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    out = np.apply_along_axis(lambda v: np.convolve(v, k, mode="same"), 0, counts)
+    return np.apply_along_axis(lambda v: np.convolve(v, k, mode="same"), 1, out)
+
+
+def _shot_map(ax, y, grid, player, alpha, heading):
+    """Shot map section: offensive zone with the net at the top, seen from the point (screen left = shooter's left).
+    grid = this player-season's rows (gx, gy, shots, goals). Returns the y of the section's bottom."""
+    y = heading("Shot map  (all situations, unblocked shots)", y)
+    top = y - 0.05
+    x_left = 0.04
+
+    def to_ax(fx, fy):
+        """Rink feet (folded) -> card axes: x across the card (0-1 = 8.5 in), y in inches. Screen left = +fy."""
+        h = -np.asarray(fy, dtype=float)
+        return x_left + (h - SHOT_Y[0]) * MAP_SCALE / 8.5, top - (SHOT_X[1] - np.asarray(fx, dtype=float)) * MAP_SCALE
+
+    def line(fx, fy, linewidth=0.8):
+        ax.plot(*to_ax(fx, fy), color=MUTED, linewidth=linewidth, zorder=3, alpha=0.8 * alpha)
+
+    def circle(cx, cy, r, start=0, end=2 * np.pi):
+        t = np.linspace(start, end, 80)
+        line(cx + r * np.cos(t), cy + r * np.sin(t))
+
+    # Density: his own shots, lightly smoothed, scaled to his busiest area
+    counts = np.zeros((SHOT_NX, SHOT_NY))
+    if len(grid):
+        np.add.at(counts, (grid["gx"].to_numpy(int), grid["gy"].to_numpy(int)), grid["shots"].to_numpy(float))
+    dens = _smooth(counts)
+    if dens.max() > 0:
+        dens = dens / dens.max()
+    left, bottom = to_ax(SHOT_X[0], SHOT_Y[1])          # blue line, shooter's left boards
+    right, top_ = to_ax(SHOT_X[1], SHOT_Y[0])           # end boards, shooter's right boards
+    image = ax.imshow(dens[:, ::-1], cmap=SHOT_CMAP, vmin=0, vmax=1, origin="lower", aspect="auto",
+                      interpolation="bilinear", extent=[left, right, bottom, top_], alpha=alpha, zorder=2)
+
+    # Rink: boards with rounded corners behind the net, clipping the density to the ice
+    t = np.linspace(0, np.pi / 2, 30)
+    corner = 28
+    bx = np.concatenate([[SHOT_X[0]], 72 + corner * np.sin(t), 72 + corner * np.cos(t), [SHOT_X[0]]])
+    by = np.concatenate([[SHOT_Y[1]], 14.5 + corner * np.cos(t), -14.5 - corner * np.sin(t), [SHOT_Y[0]]])
+    board_x, board_y = to_ax(bx, by)
+    image.set_clip_path(plt.Polygon(np.column_stack([board_x, board_y]), closed=True, transform=ax.transData))
+    line(bx, by)
+    line([SHOT_X[0], SHOT_X[0]], [SHOT_Y[0], SHOT_Y[1]], linewidth=2)                # blue line
+    goal_y = 14.5 + np.sqrt(corner ** 2 - (89 - 72) ** 2)                              # where the goal line meets the boards
+    line([89, 89], [-goal_y, goal_y])                                                   # goal line
+    line([89, 92.3, 92.3, 89], [-3, -3, 3, 3])                                          # net
+    circle(89, 0, 6, np.pi / 2, 3 * np.pi / 2)                                          # crease
+    for cy in (22, -22):
+        circle(69, cy, 15)                                                              # faceoff circles
+        ax.scatter(*to_ax(69, cy), s=8, color=MUTED, zorder=3, alpha=alpha)             # faceoff dots
+
+    # Goals: dots at cell centers, sized by count
+    scored = grid[grid["goals"] > 0] if len(grid) else grid
+    if len(scored):
+        gx, gy = to_ax(SHOT_X[0] + SHOT_CELL * (scored["gx"] + 0.5), SHOT_Y[0] + SHOT_CELL * (scored["gy"] + 0.5))
+        ax.scatter(gx, gy, s=10 + 14 * scored["goals"].clip(upper=6), color=INK, edgecolor="#ffffff",
+                   linewidth=0.8, zorder=4, alpha=alpha)
+
+    # Panel: totals (all zones) and key
+    shots = player.get("unblocked_shots", np.nan)
+    goals = player.get("unblocked_goals", np.nan)
+    if pd.isna(shots):
+        shots, goals = (grid["shots"].sum(), grid["goals"].sum()) if len(grid) else (0, 0)
+    oz = int(grid["shots"].sum()) if len(grid) else 0
+    px, py = 0.52, top - 0.15
+    for label, value in [("Unblocked shots", f"{shots:.0f}"), ("Goals", f"{goals:.0f}"),
+                         ("Shooting %  (goals / unblocked shots)", f"{goals / shots:.1%}" if shots else "–")]:
+        ax.text(px, py, label, fontsize=9, color=MUTED, va="center")
+        ax.text(px, py - 0.3, value, fontsize=17, fontweight="bold", color=INK, va="center", alpha=alpha)
+        py -= 0.75
+    notes = [f"Offensive zone: {oz} of {shots:.0f} shots",
+             "Color: where he shoots from (his own shots, smoothed)",
+             "Dots: goals (bigger = more)",
+             "Net at the top, as seen from the point"]
+    if shots < SMALL_SHOT_SAMPLE:
+        notes.append(f"Small sample: under {SMALL_SHOT_SAMPLE} unblocked shots")
+    for note in notes:
+        ax.text(px, py, note, fontsize=8, color=MUTED, va="center")
+        py -= 0.22
+    return min(bottom, py + 0.22)                       # lowest of the rink and the last note
+
 
 def _row(ax, y, label, value_text, pct, color, alpha):
     x0, x1 = 0.36, 0.82
@@ -224,8 +332,9 @@ def _row(ax, y, label, value_text, pct, color, alpha):
     ax.text(0.96, y, value_text, va="center", ha="right", fontsize=10, color=MUTED, alpha=alpha)
 
 
-def draw_card(player, season_label, edge=None, path=None):
-    """player = one row (Series) from add_percentiles. edge = output of fetch_edge, or None."""
+def draw_card(player, season_label, edge=None, path=None, shot_grid=None):
+    """player = one row (Series) from add_percentiles. edge = output of fetch_edge, or None.
+    shot_grid = this player-season's shot-map rows (gx, gy, shots, goals), or None for no shot map."""
     alpha = 1.0 if player["qualified"] else 0.35
     n_edge = sum(key not in HIDDEN_ROWS for key, _, _ in EDGE_ROWS)
     n_rows = sum(len(r) for _, r in SECTIONS) + n_edge + 2               # +2 for the clutch row and spacing
@@ -305,6 +414,9 @@ def draw_card(player, season_label, edge=None, path=None):
 
     y = heading("Clutch", y)
     ax.text(0.04, y, "Coming in v1.1", fontsize=10, color=MUTED, va="center", style="italic")
+
+    if shot_grid is not None:
+        y = _shot_map(ax, y - 0.55, shot_grid, player, alpha, heading)
 
     y -= 0.6
     source = " (EDGE percentiles from the NHL)" if (edge and not from_file) else ""
