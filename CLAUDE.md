@@ -32,4 +32,5 @@ plain language, one step at a time.
 2. Ask before installing anything.
 3. Never delete files, never run git push, never commit. Ryan reviews and commits in VS Code.
 4. Never publish or copy raw MoneyPuck data anywhere outside this folder. data/ stays private
-   (gitignored); only the slim app_data/ table is approved for the public repo.
+   (gitignored); only the slim app_data/ table is approved for the public repo. Ryan allows
+   private, temporary analysis copies in Claude's cloud workspace (never published).

@@ -21,6 +21,7 @@ The project has two parts:
 Each card shows WAR (split into offense, defense, and other) plus percentile bars for scoring, playmaking, defense, "stuff" (hits, blocks, takeaways), and skating and shot speed from NHL EDGE.
 - **Percentiles** compare a player to qualified players at his position (200+ minutes at 5-on-5). Players below that still get a card, drawn faint.
 - **Red = better, blue = worse.** Gray rows are context, not a rating: style stats like hits, and team-driven stats like on-ice chances against.
+- **Giveaways and takeaways are gray (style)** because they mostly track how often a player has the puck, which puts stars near the bottom on giveaways; the rated row is **Takeaway share**, takeaways divided by takeaways plus giveaways, which shows whether his turnovers go his team's way. Before 2024-25, arena scorers recorded these stats very differently and the NHL changed how it records them in 2024-25, so Takeaway share is gray for earlier seasons and never compared across that change.
 - **Header** shows age and draft position, so a 20-year-old #2 pick on a bad team reads differently than a 30-year-old veteran.
 - **Offensive zone time is hidden for now.** It mostly reflects the team, not the player. It's still calculated and will come back once it's adjusted for team.
 
@@ -115,9 +116,10 @@ Problems found and decisions made along the way:
 **Almanac app, after v1.0**
 - [x] Season picker (needs all five seasons)
 - [ ] Filters by team and position
-- [ ] Compare two players, with the better stat highlighted
+- [x] Compare two players, with the better stat highlighted
 - [ ] Phone-friendly card layout
 - [ ] Bring back offensive zone time, once it's adjusted for team
+- [ ] Road-games-only takeaway share for 2021-22 to 2023-24 (removes arena scorer bias)
 
 **Almanac v1.1:** clutch stats (late-game, overtime, and 6-on-5 goals), tested for whether clutch is a repeatable skill or a story fans tell.
 

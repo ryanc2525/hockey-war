@@ -1,6 +1,8 @@
 # Raw data (download from MoneyPuck, don't republish)
 data/*.csv
 data/*.xlsx
+data/*.parquet
+data/shots_raw/
 
 # Raw NHL EDGE downloads (one JSON per player, rebuildable)
 data/edge_raw/

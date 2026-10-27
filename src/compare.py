@@ -15,12 +15,14 @@ import html
 import numpy as np
 import pandas as pd
 
-from player_card import SECTIONS, EDGE_ROWS, HIDDEN_ROWS, MIN_EV_TOI, SURFACE, INK, MUTED, TRACK, STYLE_GRAY
+from player_card import (SECTIONS, EDGE_ROWS, HIDDEN_ROWS, MIN_EV_TOI, FIRST_CLEAN_TRACKING_SEASON, ERA_SENSITIVE,
+                         SURFACE, INK, MUTED, TRACK, STYLE_GRAY)
 
 MISSING = "–"
 WIN_BG = "#fbe0df"                # light version of the card's red (better)
 EDGE_SECTION = "Skating and shot  (NHL EDGE)"
-LABEL_SUFFIX = {"style": "  (style)", "context": "  (team context)"}
+LABEL_SUFFIX = {"style": "  (style)", "context": "  (team context)", "era": "  (pre-2024-25)"}
+GRAY = ("style", "context", "era")    # rows shown, never compared
 
 # Header totals, same labels as the card. direction None = shown, never highlighted. fmt None = m:ss.
 TOTALS = [
@@ -57,18 +59,27 @@ def _shown(value, fmt):
 
 
 def _winner(a_num, b_num, direction):
-    """'a', 'b', or None. Ties, missing values, and style/context rows have no winner."""
+    """'a', 'b', or None. Ties, missing values, and style/context/era rows have no winner."""
     if direction not in ("high", "low") or np.isnan(a_num) or np.isnan(b_num) or a_num == b_num:
         return None
     a_better = a_num > b_num if direction == "high" else a_num < b_num
     return "a" if a_better else "b"
 
 
+def _early(p):
+    """True for seasons before 2024-25, when takeaways and giveaways were recorded differently."""
+    return p["season"] < FIRST_CLEAN_TRACKING_SEASON
+
+
 def compare_rows(a, b):
     """One row per stat, in card order: section, label, direction, a_text, b_text, a_pct, b_pct, winner.
-    a, b = card rows (Series). Values are compared as displayed, so equal displayed values tie."""
+    a, b = card rows (Series). Values are compared as displayed, so equal displayed values tie.
+    Tracking-era rows (ERA_SENSITIVE) are only compared when both seasons are 2024-25 or later."""
+    early = _early(a) or _early(b)
     out = []
     for section, col, label, direction, fmt in _row_specs():
+        if early and col in ERA_SENSITIVE:
+            direction = "era"
         a_text, a_num = _shown(a[col], fmt)
         b_text, b_num = _shown(b[col], fmt)
         out.append({
@@ -94,6 +105,9 @@ def compare_notes(a, b):
     notes = []
     if a["pos_group"] != b["pos_group"]:
         notes.append("Different positions: percentiles compare each player to his own position.")
+    if _early(a) != _early(b):
+        notes.append("Takeaways and giveaways were recorded differently before 2024-25, "
+                     "so they are not compared across that change.")
     for p in (a, b):
         if not p["qualified"]:
             notes.append(f"Small sample: {p['name']} ({p['season_label']}) played under {MIN_EV_TOI} minutes "
@@ -131,7 +145,7 @@ def compare_html(a, b, rows):
             section = r.section
             body.append(f'<tr><td colspan="3" style="padding:14px 8px 4px;font-size:11px;font-weight:700;'
                         f'letter-spacing:0.04em;color:{MUTED}">{html.escape(section.upper())}</td></tr>')
-        gray = r.direction in ("style", "context")
+        gray = r.direction in GRAY
         label = r.label + LABEL_SUFFIX.get(r.direction, "")
         body.append(
             "<tr>"

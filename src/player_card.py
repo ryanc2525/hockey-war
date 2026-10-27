@@ -51,8 +51,9 @@ SECTIONS = [
     ("Stuff  (5v5, per 60)", [
         ("hits_60",   "Hits",                    "style", "{:.1f}"),
         ("blk_60",    "Blocked shots",           "style", "{:.1f}"),
-        ("take_60",   "Takeaways",               "high",  "{:.2f}"),
-        ("give_60",   "Giveaways",               "low",   "{:.2f}"),
+        ("take_60",   "Takeaways",               "style", "{:.2f}"),   # both track puck possession, so
+        ("give_60",   "Giveaways",               "style", "{:.2f}"),   # stars rank low on giveaways
+        ("take_share", "Takeaway share",         "high",  "{:.0%}"),   # takeaways / (takeaways + giveaways)
         ("pend_60",   "Penalties drawn (all)",   "high",  "{:.2f}"),
     ]),
 ]
@@ -64,6 +65,11 @@ EDGE_ROWS = [
     ("oz_pct_ev",  "Offensive zone time (EV)",      "{:.0%}"),
 ]
 HIDDEN_ROWS = {"oz_pct_ev"}   # still computed and saved by add_edge, just not drawn; remove a key to bring it back
+
+# Before 2024-25, home-arena scorers recorded takeaways and giveaways very differently, and the NHL's
+# recording changed in 2024-25. Rows in ERA_SENSITIVE are drawn gray (not rated) for earlier seasons.
+FIRST_CLEAN_TRACKING_SEASON = 2024   # MoneyPuck start year: 2024 = 2024-25
+ERA_SENSITIVE = {"take_share"}
 
 # ---------------------------------------------------------------------------
 # 1. Metrics table
@@ -91,6 +97,8 @@ def build_metrics(war_table, raw_path):
     m["blk_60"] = rate60(m["ev_shotsBlockedByPlayer"], t)
     m["take_60"] = rate60(m["ev_I_F_takeaways"], t)
     m["give_60"] = rate60(m["ev_I_F_giveaways"], t)
+    tg = m["ev_I_F_takeaways"] + m["ev_I_F_giveaways"]
+    m["take_share"] = np.where(tg > 0, m["ev_I_F_takeaways"] / tg, np.nan)    # NaN if both are 0
     m["pend_60"] = rate60(m["all_penaltiesDrawn"], m["all_toi"])
 
     # Season totals for the card header (all situations)
@@ -258,17 +266,23 @@ def draw_card(player, season_label, edge=None, path=None):
         ax.text(0.04, y, text.upper(), fontsize=9, fontweight="bold", color=MUTED, va="center")
         return y - 0.4
 
+    season = player.get("season", np.nan)
+    early = not pd.isna(season) and season < FIRST_CLEAN_TRACKING_SEASON    # tracking-era rows go gray
+
     y -= 0.45
     for title, rows in SECTIONS:
         y = heading(title, y)
         for col, label, direction, fmt in rows:
             pct = player[f"pct_{col}"]
-            gray = direction in ("style", "context")
+            era = early and col in ERA_SENSITIVE
+            gray = direction in ("style", "context") or era
             color = STYLE_GRAY if gray else (DIVERGING(pct / 100) if not np.isnan(pct) else TRACK)
             if direction == "style":
                 label = f"{label}  (style)"
             elif direction == "context":
                 label = f"{label}  (team context)"
+            elif era:
+                label = f"{label}  (pre-2024-25)"
             _row(ax, y, label, fmt.format(player[col]) if not np.isnan(player[col]) else "–", pct, color, alpha)
             y -= 0.36
         y -= 0.14
