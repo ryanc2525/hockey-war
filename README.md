@@ -23,6 +23,7 @@ Each card shows WAR (split into offense, defense, and other) plus percentile bar
 - **Red = better, blue = worse.** Gray rows are context, not a rating: style stats like hits, and team-driven stats like on-ice chances against.
 - **Giveaways and takeaways are gray (style)** because they mostly track how often a player has the puck, which puts stars near the bottom on giveaways; the rated row is **Takeaway share**, takeaways divided by takeaways plus giveaways, which shows whether his turnovers go his team's way. Before 2024-25, arena scorers recorded these stats very differently and the NHL changed how it records them in 2024-25, so Takeaway share is gray for earlier seasons and never compared across that change.
 - **Shot map** at the bottom of the card: where he shot from in the offensive zone (all situations, unblocked shots, net at the top as seen from the point), with goals as dots, plus his unblocked shots, goals, and shooting %. Built from MoneyPuck shot data; only pre-counted 5 ft cells are published.
+- **Clutch** section: **win probability added** (how much his goals changed his team's chance of winning) and **expected WPA** (what his shots were worth, given the moments he took them) are rated like any other row. **Clutch vs. his own finishing** (WPA minus what his usual finishing would produce from those same shots) is gray, because it doesn't repeat from season to season; it's shown for players with 100+ unblocked shots.
 - **Header** shows age and draft position, so a 20-year-old #2 pick on a bad team reads differently than a 30-year-old veteran.
 - **Offensive zone time is hidden for now.** It mostly reflects the team, not the player. It's still calculated and will come back once it's adjusted for team.
 
@@ -43,6 +44,18 @@ Using 2021-22 to 2025-26, every stat got two tests: is it **repeatable** from on
 - **Points are real skill and tied to winning.** For forwards, points predict next season's goal differential better than expected goals do.
 - **Hits and blocks are very repeatable but not tied to winning.** They describe a player's role and style, so they're shown on the card in gray and left out of WAR.
 - **Actual goals and expected goals together predict future scoring better than either one alone.** This is the starting point for Forecast.
+
+### Is clutch real?
+
+Every goal was credited with how much it changed his team's chance of winning (win probability added, WPA), using a win probability model trained on 2021-22 to 2023-24 and tested on 2025-26. Year-to-year correlation for the same player (100+ unblocked shots both seasons):
+
+| | Forwards | Defense |
+|---|---|---|
+| Win probability added | 0.64 | 0.51 |
+| Expected WPA (from his shots) | 0.71 | 0.76 |
+| Clutch (WPA beyond his own finishing) | 0.07 | 0.06 |
+
+Players who get chances in big moments and finish well keep doing it, but scoring more than his normal finishing would predict in big moments does not carry over from one season to the next.
 
 ## How the model changed across versions
 
@@ -79,7 +92,9 @@ Using 2021-22 to 2025-26, every stat got two tests: is it **repeatable** from on
 | 08 | [`edge_data`](notebooks/08_edge_data.ipynb) | Download NHL EDGE data and player profiles |
 | 09 | [`app_data`](notebooks/09_app_data.ipynb) | Slim public card table for the app (only what the card draws) |
 | 10 | [`all_seasons`](notebooks/10_all_seasons.ipynb) | Cards for all five seasons, checked against the saved 2025-26 table, and the app's combined table |
+| 11 | [`shot_data`](notebooks/11_shot_data.ipynb) | MoneyPuck shot data loaded, checked and saved as Parquet |
 | 12 | [`shot_grid`](notebooks/12_shot_grid.ipynb) | Shot map grid: 5 ft cells and totals per player-season, orientation check |
+| 13 | [`win_probability`](notebooks/13_win_probability.ipynb) | Win probability model, WPA, expected WPA and Clutch; is clutch repeatable? |
 
 The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
@@ -123,7 +138,7 @@ Problems found and decisions made along the way:
 - [ ] Bring back offensive zone time, once it's adjusted for team
 - [ ] Road-games-only takeaway share for 2021-22 to 2023-24 (removes arena scorer bias)
 
-**Almanac v1.1:** clutch stats (late-game, overtime, and 6-on-5 goals), tested for whether clutch is a repeatable skill or a story fans tell.
+- [x] **Almanac v1.1:** clutch from win probability (WPA, expected WPA, and clutch vs. his own finishing), tested for whether clutch is a repeatable skill or a story fans tell. It isn't repeatable (see "Is clutch real?").
 
 **Forecast:** aging curves, regression to the mean, and projection ranges, then a team builder and a season simulator.
 

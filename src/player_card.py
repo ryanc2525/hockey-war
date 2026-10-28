@@ -56,6 +56,11 @@ SECTIONS = [
         ("take_share", "Takeaway share",         "high",  "{:.0%}"),   # takeaways / (takeaways + giveaways)
         ("pend_60",   "Penalties drawn (all)",   "high",  "{:.2f}"),
     ]),
+    ("Clutch  (all situations)", [                                   # from data/wpa_by_season.csv (notebook 13)
+        ("wpa",    "Win probability added",          "high",  "{:.1f}"),
+        ("xwpa",   "Expected WPA (from his shots)",  "high",  "{:.1f}"),
+        ("clutch", "Clutch vs. his own finishing",   "style", "{:+.1f}"),   # doesn't repeat year to year: never rated
+    ]),
 ]
 
 EDGE_ROWS = [
@@ -70,6 +75,9 @@ HIDDEN_ROWS = {"oz_pct_ev"}   # still computed and saved by add_edge, just not d
 # recording changed in 2024-25. Rows in ERA_SENSITIVE are drawn gray (not rated) for earlier seasons.
 FIRST_CLEAN_TRACKING_SEASON = 2024   # MoneyPuck start year: 2024 = 2024-25
 ERA_SENSITIVE = {"take_share"}
+
+# Label suffix for a specific row, in place of "(style)" or "(team context)"
+ROW_SUFFIX = {"clutch": "not repeatable"}
 
 # ---------------------------------------------------------------------------
 # 1. Metrics table
@@ -126,10 +134,13 @@ def percentile_in(values, pool, direction):
 
 
 def add_percentiles(metrics):
-    """Add a pct_<metric> column for every card metric."""
+    """Add a pct_<metric> column for every card metric in the table. Rows whose column isn't there
+    (e.g. the Clutch rows in notebooks 07 and 08, built without win probability) are skipped."""
     m = metrics.copy()
     for _, rows in SECTIONS:
         for col, _, direction, _ in rows:
+            if col not in m.columns:
+                continue
             m[f"pct_{col}"] = np.nan
             for pos in ["F", "D"]:
                 at_pos = m["pos_group"] == pos
@@ -317,9 +328,14 @@ def _shot_map(ax, y, grid, player, alpha, heading):
     return min(bottom, py + 0.22)                       # lowest of the rink and the last note
 
 
-def _row(ax, y, label, value_text, pct, color, alpha):
+def _row(ax, y, label, value_text, pct, color, alpha, note=None):
+    """One stat row. note = optional small second line under the label (for labels too long for one line)."""
     x0, x1 = 0.36, 0.82
-    ax.text(0.04, y, label, va="center", ha="left", fontsize=10, color=INK, alpha=alpha)
+    if note:
+        ax.text(0.04, y + 0.065, label, va="center", ha="left", fontsize=10, color=INK, alpha=alpha)
+        ax.text(0.04, y - 0.1, note, va="center", ha="left", fontsize=8, color=MUTED, alpha=alpha)
+    else:
+        ax.text(0.04, y, label, va="center", ha="left", fontsize=10, color=INK, alpha=alpha)
     ax.plot([x0, x1], [y, y], color=TRACK, linewidth=6, solid_capstyle="round", zorder=1)
     if not np.isnan(pct):
         xe = x0 + (x1 - x0) * pct / 100
@@ -337,7 +353,7 @@ def draw_card(player, season_label, edge=None, path=None, shot_grid=None):
     shot_grid = this player-season's shot-map rows (gx, gy, shots, goals), or None for no shot map."""
     alpha = 1.0 if player["qualified"] else 0.35
     n_edge = sum(key not in HIDDEN_ROWS for key, _, _ in EDGE_ROWS)
-    n_rows = sum(len(r) for _, r in SECTIONS) + n_edge + 2               # +2 for the clutch row and spacing
+    n_rows = sum(len(r) for _, r in SECTIONS) + n_edge + 2               # +2 for spacing
     n_heads = len(SECTIONS) + 2
     height = 2.7 + 0.36 * n_rows + 0.5 * n_heads
     fig = plt.figure(figsize=(8.5, height), facecolor=SURFACE)
@@ -386,13 +402,15 @@ def draw_card(player, season_label, edge=None, path=None, shot_grid=None):
             era = early and col in ERA_SENSITIVE
             gray = direction in ("style", "context") or era
             color = STYLE_GRAY if gray else (DIVERGING(pct / 100) if not np.isnan(pct) else TRACK)
-            if direction == "style":
+            # A row with its own suffix (ROW_SUFFIX) shows it as a small second line; it's too long to fit beside the label
+            note = f"({ROW_SUFFIX[col]})" if col in ROW_SUFFIX else None
+            if note is None and direction == "style":
                 label = f"{label}  (style)"
-            elif direction == "context":
+            elif note is None and direction == "context":
                 label = f"{label}  (team context)"
-            elif era:
+            elif note is None and era:
                 label = f"{label}  (pre-2024-25)"
-            _row(ax, y, label, fmt.format(player[col]) if not np.isnan(player[col]) else "–", pct, color, alpha)
+            _row(ax, y, label, fmt.format(player[col]) if not np.isnan(player[col]) else "–", pct, color, alpha, note)
             y -= 0.36
         y -= 0.14
 
@@ -412,13 +430,10 @@ def draw_card(player, season_label, edge=None, path=None, shot_grid=None):
         y -= 0.36
     y -= 0.14
 
-    y = heading("Clutch", y)
-    ax.text(0.04, y, "Coming in v1.1", fontsize=10, color=MUTED, va="center", style="italic")
-
     if shot_grid is not None:
-        y = _shot_map(ax, y - 0.55, shot_grid, player, alpha, heading)
-
-    y -= 0.6
+        y = _shot_map(ax, y, shot_grid, player, alpha, heading) - 0.6
+    else:
+        y -= 0.25
     source = " (EDGE percentiles from the NHL)" if (edge and not from_file) else ""
     ax.text(0.04, y, f"Percentiles vs. qualified players at the same position{source}.\n"
                      "Red = better, blue = worse, gray = style or team context (not a rating). Data: MoneyPuck.com, NHL EDGE.",
@@ -474,13 +489,21 @@ def season_label(season):
     return f"{season}-{str(season + 1)[-2:]}"
 
 
-def build_season_cards(skaters_path, edge_dir, bio_dir):
-    """Full card table for one season: WAR v0.4, card metrics, percentiles, saved EDGE data,
-    and age and draft (age as of Feb 1 of the season's end year)."""
+WPA_COLS = ["wpa", "xwpa", "clutch"]
+
+
+def build_season_cards(skaters_path, edge_dir, bio_dir, wpa_table):
+    """Full card table for one season: WAR v0.4, card metrics, win probability (WPA, xWPA, Clutch),
+    percentiles, saved EDGE data, and age and draft (age as of Feb 1 of the season's end year).
+    wpa_table = data/wpa_by_season.csv (notebook 13), all seasons."""
     from edge_data import build_table, build_bio_table
     war = run_season(skaters_path, V04_PARAMS)
     season = int(war["season"].iloc[0])
-    cards = add_percentiles(build_metrics(war, skaters_path))
+    metrics = build_metrics(war, skaters_path)
+    wpa = wpa_table.loc[wpa_table["season"] == season, ["playerId"] + WPA_COLS]
+    metrics = metrics.merge(wpa, on="playerId", how="left")
+    metrics[["wpa", "xwpa"]] = metrics[["wpa", "xwpa"]].fillna(0.0)    # no unblocked shots: 0; Clutch stays blank
+    cards = add_percentiles(metrics)
     cards = add_edge(cards, build_table(edge_dir))
     cards = add_bio(cards, build_bio_table(bio_dir, season + 1))
     cards["season_label"] = season_label(season)

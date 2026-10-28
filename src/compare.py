@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from player_card import (SECTIONS, EDGE_ROWS, HIDDEN_ROWS, MIN_EV_TOI, FIRST_CLEAN_TRACKING_SEASON, ERA_SENSITIVE,
-                         SURFACE, INK, MUTED, TRACK, STYLE_GRAY)
+                         ROW_SUFFIX, SURFACE, INK, MUTED, TRACK, STYLE_GRAY)
 
 MISSING = "–"
 WIN_BG = "#fbe0df"                # light version of the card's red (better)
@@ -72,7 +72,7 @@ def _early(p):
 
 
 def compare_rows(a, b):
-    """One row per stat, in card order: section, label, direction, a_text, b_text, a_pct, b_pct, winner.
+    """One row per stat, in card order: section, col, label, direction, a_text, b_text, a_pct, b_pct, winner.
     a, b = card rows (Series). Values are compared as displayed, so equal displayed values tie.
     Tracking-era rows (ERA_SENSITIVE) are only compared when both seasons are 2024-25 or later."""
     early = _early(a) or _early(b)
@@ -83,7 +83,7 @@ def compare_rows(a, b):
         a_text, a_num = _shown(a[col], fmt)
         b_text, b_num = _shown(b[col], fmt)
         out.append({
-            "section": section, "label": label, "direction": direction,
+            "section": section, "col": col, "label": label, "direction": direction,
             "a_text": a_text, "b_text": b_text,
             "a_pct": a.get(f"pct_{col}", np.nan), "b_pct": b.get(f"pct_{col}", np.nan),
             "winner": _winner(a_num, b_num, direction),
@@ -146,7 +146,7 @@ def compare_html(a, b, rows):
             body.append(f'<tr><td colspan="3" style="padding:14px 8px 4px;font-size:11px;font-weight:700;'
                         f'letter-spacing:0.04em;color:{MUTED}">{html.escape(section.upper())}</td></tr>')
         gray = r.direction in GRAY
-        label = r.label + LABEL_SUFFIX.get(r.direction, "")
+        label = r.label + (f"  ({ROW_SUFFIX[r.col]})" if r.col in ROW_SUFFIX else LABEL_SUFFIX.get(r.direction, ""))
         body.append(
             "<tr>"
             + _value_cell(r.a_text, r.a_pct, r.winner == "a", gray)

@@ -27,7 +27,7 @@ STATE_STEP = 10                      # one game state every 10 seconds, so the f
 # With +1, a team down 1 with under a minute left was predicted at 0.6% vs 4.5% actual; with +240 it's about 5.6%.
 LATE_GAME_OFFSET = 240
 HIGH_LEVERAGE = 0.15                 # a goal worth at least 15 percentage points of win probability
-FINISH_PRIOR = 10                    # finishing shrunk toward 1.0: (goals + 10) / (xG + 10)
+MIN_CLUTCH_SHOTS = 100               # unblocked shots; below this Clutch is blank (too few shots to mean anything)
 COEF_NAMES = ["intercept (home ice)", "score diff", "secs remaining / 3600", f"diff / sqrt(secs + {LATE_GAME_OFFSET})"]
 
 
@@ -152,8 +152,10 @@ def player_wpa(shots):
     out = out.reset_index()
     out["season_label"] = out["season"].map(lambda y: f"{y}-{str(y + 1)[-2:]}")
     out["pos_group"] = np.where(out["position"] == "D", "D", "F")
-    out["finishing"] = (out["goals"] + FINISH_PRIOR) / (out["xg"] + FINISH_PRIOR)
-    out["clutch"] = out["wpa"] - out["finishing"] * out["xwpa"]
+    # Clutch = WPA beyond what his own finishing (goals / xG, all his unblocked shots) would produce from those moments.
+    # Unshrunk on purpose: shrinking finishing toward average leaves part of his finishing inside Clutch (notebook 13).
+    out["finishing"] = np.where(out["xg"] > 0, out["goals"] / out["xg"].where(out["xg"] > 0), 0.0)
+    out["clutch"] = (out["wpa"] - out["finishing"] * out["xwpa"]).where(out["unblocked_shots"] >= MIN_CLUTCH_SHOTS)
     cols = ["playerId", "season", "season_label", "name", "position", "pos_group", "team", "unblocked_shots",
             "goals", "xg", "finishing", "wpa", "xwpa", "clutch", "hl_goals", "ot_goals"]
     return out[cols]
