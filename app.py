@@ -8,6 +8,7 @@ Reads the slim public card table (app_data/cards.csv, written by notebook 10) on
 No WAR math, no NHL API calls. season = MoneyPuck start year (2025 = 2025-26); the app shows season_label.
 """
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -19,6 +20,10 @@ import streamlit as st
 
 ROOT = Path(__file__).parent
 sys.path.append(str(ROOT / "src"))          # so "from player_card import ..." works, like in the notebooks
+import player_card
+import compare
+importlib.reload(player_card)               # pick up pushed changes to src/ without rebooting the app
+importlib.reload(compare)                   # after player_card, because compare imports from it
 from player_card import draw_card
 from compare import compare_rows, compare_notes, compare_html
 
