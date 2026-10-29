@@ -5,10 +5,12 @@ DEFAULT_PARAMS reproduces v0.3 exactly (kept so older notebooks still match).
 V04_PARAMS is the current single-season model (v0.4).
 
 Same math as notebooks 01 and 04, but written once so it can run on any
-MoneyPuck season-level skaters file:
+MoneyPuck season-level skaters file, or one season of the combined history file:
 
-    from war_model import run_season
-    war_2025 = run_season("../data/skaters25-26.csv")
+    from war_model import run_season, V04_PARAMS
+    war_2025 = run_season("../data/skaters25-26.csv", V04_PARAMS)
+    skaters = pd.read_csv("../data/skaters_2008_to_2024.csv")
+    war_2015 = run_season(skaters[skaters["season"] == 2015], V04_PARAMS)
 
 Data: MoneyPuck.com (season-level skaters CSV).
 """
@@ -76,9 +78,11 @@ def toi_weighted(group, col, toi_col):
 # ---------------------------------------------------------------------------
 # Step 1: load and reshape (notebook 01)
 # ---------------------------------------------------------------------------
-def load_players(path, params=DEFAULT_PARAMS):
-    """Read a MoneyPuck skaters file and return one row per player."""
-    raw = pd.read_csv(path).copy()
+def load_players(source, params=DEFAULT_PARAMS):
+    """Read a MoneyPuck skaters file (path) or one season of it (DataFrame) and return one row per player."""
+    raw = (source if isinstance(source, pd.DataFrame) else pd.read_csv(source)).copy()
+    if raw["season"].nunique() != 1:       # the reshape below is keyed on playerId, so seasons would mix
+        raise ValueError("load_players needs one season; filter the combined file first")
     raw["pos_group"] = np.where(raw["position"] == "D", "D", "F")
 
     sub = raw[raw["situation"].isin(SIT_MAP.keys())].copy()
@@ -199,6 +203,6 @@ def compute_war(players, params=DEFAULT_PARAMS):
     return p
 
 
-def run_season(path, params=DEFAULT_PARAMS):
-    """Load one season file and return every skater's WAR."""
-    return compute_war(load_players(path, params), params)
+def run_season(source, params=DEFAULT_PARAMS):
+    """Load one season (file path, or a DataFrame with one season's rows) and return every skater's WAR."""
+    return compute_war(load_players(source, params), params)

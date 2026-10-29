@@ -57,6 +57,22 @@ Every goal was credited with how much it changed his team's chance of winning (w
 
 Players who get chances in big moments and finish well keep doing it, but scoring more than his normal finishing would predict in big moments does not carry over from one season to the next.
 
+### Goalies
+
+Goalie WAR (v0, 2008-09 to 2025-26) is goals saved above expected (GSAx), minus what a replacement-level backup would save in the same minutes, converted to wins. Adding it to skater WAR raises the match with team goal differential in every season (average 0.78 to 0.85). It isn't on the cards yet.
+
+Which goalie stats repeat from season to season (1000+ minutes both seasons, each compared to that season's league average, because MoneyPuck's expected goals drift for everyone in recent seasons):
+
+| | All goalies | Changed teams |
+|---|---|---|
+| Goals saved above expected | 0.12 | -0.11 |
+| High-danger GSAx | 0.06 | -0.10 |
+| Freezes vs. expected | 0.57 | 0.48 |
+| Rebounds vs. expected | 0.29 | 0.09 |
+| Save % | 0.14 | -0.08 |
+
+Puck handling after the save (freezing the puck instead of giving up rebounds) is a real, portable goalie skill. Stopping more goals than expected barely repeats, so one great season says little about the next.
+
 ## How the model changed across versions
 
 | Version | What changed | What it fixed or revealed |
@@ -95,6 +111,7 @@ Players who get chances in big moments and finish well keep doing it, but scorin
 | 11 | [`shot_data`](notebooks/11_shot_data.ipynb) | MoneyPuck shot data loaded, checked and saved as Parquet |
 | 12 | [`shot_grid`](notebooks/12_shot_grid.ipynb) | Shot map grid: 5 ft cells and totals per player-season, orientation check |
 | 13 | [`win_probability`](notebooks/13_win_probability.ipynb) | Win probability model, WPA, expected WPA and Clutch; is clutch repeatable? |
+| 14 | [`history_and_goalies`](notebooks/14_history_and_goalies.ipynb) | Skater WAR back to 2008-09; goalie WAR v0 and team check; which goalie stats repeat |
 
 The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
@@ -117,7 +134,7 @@ Problems found and decisions made along the way:
 
 - The defense stat partly measures linemates and opponents, not just the player. Fixing that needs shift-level data.
 - Constants (goals per win, penalty value, faceoff value, assist weight) are approximations.
-- Goalies are not included.
+- Goalie WAR exists (notebook 14) but isn't on the cards yet.
 - Traded players are listed under their final team. Their stats cover the full season, but the replacement-level and penalty kill comparisons only use the last team.
 
 ## Roadmap

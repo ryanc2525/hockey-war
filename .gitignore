@@ -3,6 +3,7 @@ data/*.csv
 data/*.xlsx
 data/*.parquet
 data/shots_raw/
+*.zip
 
 # Raw NHL EDGE downloads (one JSON per player, rebuildable)
 data/edge_raw/

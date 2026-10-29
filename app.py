@@ -32,10 +32,16 @@ SHOT_GRID_PATH = ROOT / "app_data" / "shot_grid.csv"        # pre-counted 5 ft c
 SHOT_TOTALS_PATH = ROOT / "app_data" / "shot_totals.csv"    # unblocked shots and goals per player-season
 
 
+def mtime(path):
+    """Last-modified time of a file. Passed to the cached loaders so new data (after a push) is read again."""
+    return path.stat().st_mtime
+
+
 @st.cache_data
-def load_cards():
+def load_cards(cards_mtime, totals_mtime):
     """Read the card table once; Streamlit reruns this script on every click, so cache it.
-    Returns every player-season (with shot-map totals), plus one row per player for the search list."""
+    Returns every player-season (with shot-map totals), plus one row per player for the search list.
+    The mtimes aren't used inside; they're part of the cache key, so a changed file is read again."""
     cards = pd.read_csv(CARDS_PATH)
     totals = pd.read_csv(SHOT_TOTALS_PATH)
     cards = cards.merge(totals, on=["playerId", "season"], how="left")
@@ -49,8 +55,9 @@ def load_cards():
 
 
 @st.cache_data
-def load_shot_grid():
-    """Shot-map cells indexed by (playerId, season), so one player-season's rows are a quick lookup."""
+def load_shot_grid(grid_mtime):
+    """Shot-map cells indexed by (playerId, season), so one player-season's rows are a quick lookup.
+    grid_mtime is part of the cache key (see load_cards)."""
     return pd.read_csv(SHOT_GRID_PATH).set_index(["playerId", "season"]).sort_index()
 
 
@@ -90,8 +97,8 @@ st.set_page_config(page_title="Hockey WAR player cards", layout="centered")
 st.title("Hockey WAR player cards")
 st.caption("2021-22 to 2025-26 NHL skaters. Type a name to search. Data: MoneyPuck.com, NHL EDGE.")
 
-cards, players = load_cards()
-shot_grid = load_shot_grid()
+cards, players = load_cards(mtime(CARDS_PATH), mtime(SHOT_TOTALS_PATH))
+shot_grid = load_shot_grid(mtime(SHOT_GRID_PATH))
 
 a = pick("a", "Player")
 if a is None:
