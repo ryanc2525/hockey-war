@@ -73,6 +73,13 @@ Which goalie stats repeat from season to season (1000+ minutes both seasons, eac
 
 Puck handling after the save (freezing the puck instead of giving up rebounds) is a real, portable goalie skill. Stopping more goals than expected barely repeats, so one great season says little about the next.
 
+### Forecast: true talent and aging
+
+- **Three seasons beat one.** Blending a skater's last 3 seasons and pulling him toward his position's average (1,500 minutes' worth) predicts next season's WAR rate 34% better than last season alone (error 0.268 vs. 0.404 GAR per 60, backtested on 14 seasons from 2009-10 to 2025-26).
+- **Goalies barely beat average.** The best goalie blend is only 2% better than calling every goalie league average.
+- **Aging:** forwards decline faster each year as they age (about -0.05 WAR per 1,000 minutes at 25, -0.15 at 30, -0.19 at 33); defensemen decline slowly and evenly. The curves understate early-career growth because players who keep their jobs tend to regress, so the slopes matter more than the peak ages. Aging lowered the backtest error by about 1% for skaters and not at all for goalies.
+- Projections stay private for now.
+
 ## How the model changed across versions
 
 | Version | What changed | What it fixed or revealed |
@@ -112,6 +119,7 @@ Puck handling after the save (freezing the puck instead of giving up rebounds) i
 | 12 | [`shot_grid`](notebooks/12_shot_grid.ipynb) | Shot map grid: 5 ft cells and totals per player-season, orientation check |
 | 13 | [`win_probability`](notebooks/13_win_probability.ipynb) | Win probability model, WPA, expected WPA and Clutch; is clutch repeatable? |
 | 14 | [`history_and_goalies`](notebooks/14_history_and_goalies.ipynb) | Skater WAR back to 2008-09; goalie WAR v0 and team check; which goalie stats repeat |
+| 15 | [`true_talent_and_aging`](notebooks/15_true_talent_and_aging.ipynb) | True-talent WAR (backtested blend of 3 seasons), aging curves for F, D and G, private 2026-27 projections |
 
 The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
@@ -157,7 +165,9 @@ Problems found and decisions made along the way:
 
 - [x] **Almanac v1.1:** clutch from win probability (WPA, expected WPA, and clutch vs. his own finishing), tested for whether clutch is a repeatable skill or a story fans tell. It isn't repeatable (see "Is clutch real?").
 
-**Forecast:** aging curves, regression to the mean, and projection ranges, then a team builder and a season simulator.
+**Forecast**
+- [x] True talent (regression to the mean) and aging curves
+- [ ] Projection ranges, then a team builder and a season simulator
 
 ## Data
 
