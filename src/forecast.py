@@ -75,7 +75,8 @@ def _blend(prior, history, target_season, weights, reg_minutes):
     t = target_season
     w = prior["season"].map({t - 1: weights[0], t - 2: weights[1], t - 3: weights[2]})
     g = prior.assign(wg=w * prior["gar"], wt=w * prior["toi"]).groupby("playerId")
-    out = g.agg(wg=("wg", "sum"), wt=("wt", "sum"), seasons_used=("season", "size"), minutes_used=("toi", "sum"))
+    out = g.agg(wg=("wg", "sum"), wt=("wt", "sum"), seasons_used=("season", "size"), minutes_used=("toi", "sum"),
+                last_season=("season", "max"))
     latest = prior.sort_values("season").groupby("playerId")[["name", "team", "position", "group"]].last()
     out = latest.join(out)
     out["group_gar_60"] = out["group"].map(group_average(history, t - 1))
@@ -113,9 +114,22 @@ def aging_pairs(history, bios, exclude_season=None):
     }).reset_index(drop=True)
 
 
-def aging_curve(history, bios, exclude_season=None):
+def age_mix(history, bios, exclude_season=None):
+    """Total minutes by group and age (clipped to AGE_MIN..AGE_MAX), over every player-season with a birth date."""
+    h = add_age(history, bios)
+    h = h[h["age"].notna()]
+    if exclude_season is not None:
+        h = h[h["season"] != exclude_season]
+    return h.groupby(["group", h["age"].clip(AGE_MIN, AGE_MAX).astype(int).rename("age")])["toi"].sum()
+
+
+def aging_curve(history, bios, exclude_season=None, center=True):
     """(raw, smoothed). raw: group, age, delta (weighted mean WAR/60 change from this age to the next), pairs, weight.
-    smoothed: group, age (AGE_MIN..AGE_MAX), delta from a weighted quadratic fit of the raw points, per group."""
+    smoothed: group, age (AGE_MIN..AGE_MAX), delta_uncentered (weighted quadratic fit of the raw points, per group),
+    shift, and delta. With center=True, delta = delta_uncentered - shift, where shift is the curve's average over the
+    league's actual age mix (minutes at each age), so the league as a whole neither gains nor loses from aging.
+    The raw delta method curves sit below zero because players who keep their jobs tend to regress after a lucky
+    season; true talent already handles that regression, so without centering it would be counted twice."""
     p = aging_pairs(history, bios, exclude_season)
     raw = (p.assign(wd=p["delta"] * p["weight"])
             .groupby(["group", "age"])
@@ -125,10 +139,14 @@ def aging_curve(history, bios, exclude_season=None):
     raw = raw[["group", "age", "delta", "pairs", "weight"]]
 
     ages = np.arange(AGE_MIN, AGE_MAX + 1)
+    mix = age_mix(history, bios, exclude_season)
     smoothed = []
     for group, r in raw.groupby("group"):
         coef = np.polyfit(r["age"], r["delta"], 2, w=np.sqrt(r["weight"]))   # polyfit's w multiplies residuals
-        smoothed.append(pd.DataFrame({"group": group, "age": ages, "delta": np.polyval(coef, ages)}))
+        fit = np.polyval(coef, ages)
+        shift = np.average(fit, weights=mix[group].reindex(ages, fill_value=0)) if center else 0.0
+        smoothed.append(pd.DataFrame({"group": group, "age": ages, "delta_uncentered": fit,
+                                      "shift": shift, "delta": fit - shift}))
     return raw, pd.concat(smoothed, ignore_index=True)
 
 
@@ -172,6 +190,7 @@ def project(history, bios, target_season, weights=(1, 1, 1), reg_minutes=1000, a
     out = _blend(prior, h, target_season, weights, reg_minutes)
     out["age_next"] = season_age(_birth_dates(bios, out.index), np.full(len(out), target_season))
     out["has_age"] = out["age_next"].notna()
+    out["played_last_season"] = out["last_season"] == target_season - 1     # team is then his target-1 team
     out["aging"] = out["group"].map(aging)
 
     one_year = _curve_lookup(curve, out["group"], out["age_next"] - 1) if curve is not None else np.zeros(len(out))
@@ -190,16 +209,18 @@ def project(history, bios, target_season, weights=(1, 1, 1), reg_minutes=1000, a
     return out
 
 
-def backtest(history, targets, weights, reg_minutes, min_target_toi, bios=None, aging="none", average_only=False):
+def backtest(history, targets, weights, reg_minutes, min_target_toi, bios=None, aging="none", average_only=False,
+             center=True):
     """Predicted vs. actual GAR/60 for every target season. Players: min_target_toi+ minutes in the target season
     and a season in target-1 (the same players for every setting). With aging, the curve is refit for each target
-    without any pair that includes the target season. average_only=True predicts his group's average instead."""
+    without any pair that includes the target season (center: see aging_curve).
+    average_only=True predicts his group's average instead."""
     needs_curve = (aging if isinstance(aging, dict) else {"x": aging}).values()
     rows = []
     for t in targets:
         tgt = history[(history["season"] == t) & (history["toi"] >= min_target_toi)
                       & history["playerId"].isin(history.loc[history["season"] == t - 1, "playerId"])]
-        curve = aging_curve(history, bios, exclude_season=t)[1] if any(v != "none" for v in needs_curve) else None
+        curve = aging_curve(history, bios, exclude_season=t, center=center)[1] if any(v != "none" for v in needs_curve) else None
         proj = project(history, bios, t, weights, reg_minutes, aging, curve)
         pred = proj["group_gar_60"] if average_only else proj["proj_war_60"] * GOALS_PER_WIN
         rows.append(pd.DataFrame({"season": t, "playerId": tgt["playerId"].to_numpy(), "group": tgt["group"].to_numpy(),

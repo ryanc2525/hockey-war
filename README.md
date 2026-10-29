@@ -77,7 +77,7 @@ Puck handling after the save (freezing the puck instead of giving up rebounds) i
 
 - **Three seasons beat one.** Blending a skater's last 3 seasons and pulling him toward his position's average (1,500 minutes' worth) predicts next season's WAR rate 34% better than last season alone (error 0.268 vs. 0.404 GAR per 60, backtested on 14 seasons from 2009-10 to 2025-26).
 - **Goalies barely beat average.** The best goalie blend is only 2% better than calling every goalie league average.
-- **Aging:** forwards decline faster each year as they age (about -0.05 WAR per 1,000 minutes at 25, -0.15 at 30, -0.19 at 33); defensemen decline slowly and evenly. The curves understate early-career growth because players who keep their jobs tend to regress, so the slopes matter more than the peak ages. Aging lowered the backtest error by about 1% for skaters and not at all for goalies.
+- **Aging:** centered so the league as a whole doesn't age up or down, forwards peak around 27 (+0.03 WAR per 1,000 minutes a year at 25, -0.06 at 30, -0.10 at 33), defensemen around 26 and decline slowly (-0.02 a year at 30 to 33), and goalies hold up into their early 30s. Aging lowers the backtest error slightly for all three groups (0.3% to 1%).
 - Projections stay private for now.
 
 ## How the model changed across versions
