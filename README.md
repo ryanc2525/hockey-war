@@ -71,7 +71,7 @@ Which goalie stats repeat from season to season (1000+ minutes both seasons, eac
 | Rebounds vs. expected | 0.29 | 0.09 |
 | Save % | 0.14 | -0.08 |
 
-Puck handling after the save (freezing the puck instead of giving up rebounds) is a real, portable goalie skill. Stopping more goals than expected barely repeats, so one great season says little about the next.
+Freezing the puck is the one goalie skill that clearly travels with a goalie to a new team. Stopping more goals than expected barely repeats, so one great season says little about the next.
 
 ### Forecast: true talent and aging
 
