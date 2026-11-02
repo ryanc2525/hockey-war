@@ -263,6 +263,21 @@ def direct_breakdown(pairs, min_pairs=MIN_DIRECT_PAIRS):
     return pd.DataFrame(rows).sort_values("all factor", ascending=False)
 
 
+def position_factors(pairs, direct_leagues, min_pairs=20):
+    """
+    Method A direct factors for forwards and defensemen separately: league, group, factor, pairs.
+    Only leagues in direct_leagues, and only positions with min_pairs pairs; anyone else uses the
+    league's all-player factor.
+    """
+    nhl = pairs[(pairs["league_to"] == "NHL") & pairs["league_from"].isin(direct_leagues)]
+    rows = []
+    for group, part in nhl.groupby("group"):
+        t = _link_table(part)
+        rows.append(t[t["pairs"] >= min_pairs].assign(group=group))
+    out = pd.concat(rows, ignore_index=True).rename(columns={"league_from": "league"})
+    return out[["league", "group", "factor", "pairs"]].sort_values(["group", "league"]).reset_index(drop=True)
+
+
 def age_breakdown(pairs, min_pairs=MIN_DIRECT_PAIRS, min_cell=20):
     """Direct method A factors by age at season t; cells with fewer than min_cell pairs are blank."""
     nhl = pairs[pairs["league_to"] == "NHL"].assign(bucket=lambda x: age_bucket(x["age"]).to_numpy())
@@ -339,9 +354,17 @@ def rookie_rows(careers, min_gp=20, max_gp=None, min_prior_gp=MIN_GP_PAIR):
     }).reset_index(drop=True)
 
 
-def predict(rookies, factors, multipliers=None):
-    """Predicted NHL points per game: prior league ppg x factor (x age multiplier if given)."""
-    pred = rookies["prior_ppg"] * rookies["prior_league"].map(factors)
+def predict(rookies, factors, multipliers=None, by_group=None):
+    """
+    Predicted NHL points per game: prior league ppg x factor (x age multiplier if given).
+    by_group (from position_factors) replaces the league factor for the league and position pairs it lists.
+    """
+    f = rookies["prior_league"].map(factors)
+    if by_group is not None:
+        key = pd.MultiIndex.from_arrays([rookies["prior_league"], rookies["group"]])
+        pos = pd.Series(by_group.set_index(["league", "group"])["factor"].reindex(key).to_numpy(), index=rookies.index)
+        f = pos.fillna(f)
+    pred = rookies["prior_ppg"] * f
     if multipliers is not None:
         pred = pred * age_bucket(rookies["prior_age"]).map(multipliers).fillna(1.0).to_numpy()
     return pred
