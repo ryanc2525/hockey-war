@@ -8,7 +8,8 @@ Forecast building blocks: true-talent WAR and aging curves, for skaters and goal
     proj = project(history, bios, 2026, (1, 1, 1), 1000, aging="adjust_then_blend", curve=curve)
 
 True talent = a player's GAR per 60 over up to 3 prior seasons (weight x minutes), blended with reg_minutes
-of his group's average (F, D or G) from the most recent prior season. Rates are per 60 minutes;
+of his group's average (F, D or G) from the most recent prior season. Optional priors (notebook 18) replace the
+group average with a player's own expected GAR/60, with prior_reg minutes of weight. Rates are per 60 minutes;
 GAR is in goals and WAR = GAR / GOALS_PER_WIN.
 season = MoneyPuck start year (2025 = 2025-26). Age in a season = age on February 1 of its end year.
 """
@@ -70,8 +71,10 @@ def group_average(history, season):
     return s["gar"].sum() / s["toi"].sum() * 60
 
 
-def _blend(prior, history, target_season, weights, reg_minutes):
-    """Weighted, regressed GAR/60 for every player in prior (rows from target-1 to target-3)."""
+def _blend(prior, history, target_season, weights, reg_minutes, priors=None, prior_reg=None):
+    """Weighted, regressed GAR/60 for every player in prior (rows from target-1 to target-3).
+    priors: optional Series (playerId -> expected GAR/60). Those players are regressed toward their own value,
+    with prior_reg minutes of weight (default reg_minutes); everyone else toward his group's average."""
     t = target_season
     w = prior["season"].map({t - 1: weights[0], t - 2: weights[1], t - 3: weights[2]})
     g = prior.assign(wg=w * prior["gar"], wt=w * prior["toi"]).groupby("playerId")
@@ -80,7 +83,17 @@ def _blend(prior, history, target_season, weights, reg_minutes):
     latest = prior.sort_values("season").groupby("playerId")[["name", "team", "position", "group"]].last()
     out = latest.join(out)
     out["group_gar_60"] = out["group"].map(group_average(history, t - 1))
-    out["tt_gar_60"] = (out["wg"] + reg_minutes * out["group_gar_60"] / 60) / (out["wt"] + reg_minutes) * 60
+    out["prior_gar_60"] = out["group_gar_60"]          # what he's regressed toward
+    out["prior_minutes"] = float(reg_minutes)          # and with how many minutes of weight
+    out["prior_applied"] = False
+    if priors is not None:
+        own = priors.reindex(out.index)
+        has = own.notna()
+        out.loc[has, "prior_gar_60"] = own[has]
+        out.loc[has, "prior_minutes"] = float(reg_minutes if prior_reg is None else prior_reg)
+        out.loc[has, "prior_applied"] = True
+    out["tt_gar_60"] = ((out["wg"] + out["prior_minutes"] * out["prior_gar_60"] / 60)
+                        / (out["wt"] + out["prior_minutes"]) * 60)
     out["tt_war_60"] = out["tt_gar_60"] / GOALS_PER_WIN
     return out.drop(columns=["wg", "wt"])
 
@@ -176,18 +189,24 @@ def cumulative_aging(curve, group, from_age, to_age):
 # ---------------------------------------------------------------------------
 # 4. Projection and backtest
 # ---------------------------------------------------------------------------
-def project(history, bios, target_season, weights=(1, 1, 1), reg_minutes=1000, aging="none", curve=None):
+def project(history, bios, target_season, weights=(1, 1, 1), reg_minutes=1000, aging="none", curve=None,
+            priors=None, prior_reg=None):
     """True talent going into target_season, with an optional aging adjustment:
     "none": true talent as is.
     "one_year": true talent + the smoothed change at his age in target-1.
     "adjust_then_blend": each prior season's GAR/60 is moved to his target-season age (cumulative smoothed
         changes), then the seasons are weighted and regressed as usual. The group average isn't aged.
-    aging can also be a dict {group: version}. aging_change = projected minus unadjusted true talent (WAR/60)."""
+    aging can also be a dict {group: version}. aging_change = projected minus unadjusted true talent (WAR/60).
+    priors: optional DataFrame (playerId, season, prior_gar_60); rows for target_season replace the group average
+    for those players, with prior_reg minutes of weight (see _blend)."""
     if not isinstance(aging, dict):
         aging = {g: aging for g in GROUPS}
     h = add_age(history, bios)
     prior = h[h["season"].between(target_season - 3, target_season - 1)].copy()
-    out = _blend(prior, h, target_season, weights, reg_minutes)
+    own = None
+    if priors is not None:
+        own = priors[priors["season"] == target_season].set_index("playerId")["prior_gar_60"]
+    out = _blend(prior, h, target_season, weights, reg_minutes, own, prior_reg)
     out["age_next"] = season_age(_birth_dates(bios, out.index), np.full(len(out), target_season))
     out["has_age"] = out["age_next"].notna()
     out["played_last_season"] = out["last_season"] == target_season - 1     # team is then his target-1 team
@@ -201,7 +220,7 @@ def project(history, bios, target_season, weights=(1, 1, 1), reg_minutes=1000, a
         a = prior[prior["playerId"].isin(adjust)].copy()
         target_age = a["playerId"].map(out["age_next"])
         a["gar"] = a["gar"] + cumulative_aging(curve, a["group"], a["age"], target_age) * GOALS_PER_WIN * a["toi"] / 60
-        adjusted = _blend(a, h, target_season, weights, reg_minutes)["tt_war_60"]
+        adjusted = _blend(a, h, target_season, weights, reg_minutes, own, prior_reg)["tt_war_60"]
         proj = pd.Series(proj, index=out.index)
         proj.loc[adjust] = adjusted.reindex(adjust)
     out["proj_war_60"] = np.asarray(proj, dtype=float)
@@ -210,18 +229,18 @@ def project(history, bios, target_season, weights=(1, 1, 1), reg_minutes=1000, a
 
 
 def backtest(history, targets, weights, reg_minutes, min_target_toi, bios=None, aging="none", average_only=False,
-             center=True):
+             center=True, priors=None, prior_reg=None):
     """Predicted vs. actual GAR/60 for every target season. Players: min_target_toi+ minutes in the target season
     and a season in target-1 (the same players for every setting). With aging, the curve is refit for each target
     without any pair that includes the target season (center: see aging_curve).
-    average_only=True predicts his group's average instead."""
+    average_only=True predicts his group's average instead. priors / prior_reg: see project."""
     needs_curve = (aging if isinstance(aging, dict) else {"x": aging}).values()
     rows = []
     for t in targets:
         tgt = history[(history["season"] == t) & (history["toi"] >= min_target_toi)
                       & history["playerId"].isin(history.loc[history["season"] == t - 1, "playerId"])]
         curve = aging_curve(history, bios, exclude_season=t, center=center)[1] if any(v != "none" for v in needs_curve) else None
-        proj = project(history, bios, t, weights, reg_minutes, aging, curve)
+        proj = project(history, bios, t, weights, reg_minutes, aging, curve, priors, prior_reg)
         pred = proj["group_gar_60"] if average_only else proj["proj_war_60"] * GOALS_PER_WIN
         rows.append(pd.DataFrame({"season": t, "playerId": tgt["playerId"].to_numpy(), "group": tgt["group"].to_numpy(),
                                   "pred": pred.reindex(tgt["playerId"]).to_numpy(),

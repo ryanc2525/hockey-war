@@ -432,3 +432,122 @@ def draw(players, pools, fit, carry, n=1000, seed=2026):
             "one_year": miss - luck - persistent, "persistent": persistent,
             "war_60": p.proj_war_60 + miss, "war": (p.proj_war_60 + miss) * p.minutes / 60}))
     return pd.concat(out, ignore_index=True)
+
+
+# ---------------------------------------------------------------------------
+# 10. Player-specific prior (notebook 18)
+# ---------------------------------------------------------------------------
+# What a skater is regressed toward, instead of his position's average: an expected GAR/60 from his best
+# pre-NHL scoring (NHLe), draft position, age and NHL experience, fit on what such players did in the NHL.
+PRIOR_INPUTS = ["nhle_ppg", "log_pick", "undrafted", "age", "experience"]
+DIAG_INPUTS = ["age", "experience"]          # diagnostic version (d): no NHLe, no draft
+EXP_CAP = 7                                  # experience beyond 7 seasons counts as 7
+PRIOR_MIN_TOI = 300                          # skater-seasons used to fit the prior
+VERSIONS = {"a": "everyone", "b": "3 or fewer NHL seasons", "c": "25 or under",
+            "d": "everyone, age + experience only"}
+
+
+def training_nhle(careers, end):
+    """
+    Notebook 16's chosen NHLe (method A x age multiplier, forward/defense factors), refit with data through
+    `end` only, in the format best_nhle reads: (factors table, age multiplier table).
+    """
+    from nhle import next_season_pairs, method_a, position_factors, rookie_rows, age_multipliers
+    pairs = next_season_pairs(careers, max_to_season=end)
+    a = method_a(pairs).set_index("league")
+    pos = position_factors(pairs, a.index[a["path_type"] == "direct"])
+    rk = rookie_rows(careers)
+    rk = rk[rk["season"] <= end]
+    mult = age_multipliers(rk, nhle_predict(rk, a["factor"], by_group=pos))
+    factors = pd.concat([a.reset_index()[["league", "factor", "pairs", "path_type"]].assign(group="all"),
+                         pos[["league", "group", "factor", "pairs"]].assign(path_type="direct")],
+                        ignore_index=True).assign(chosen=True)
+    multipliers = mult.rename("multiplier").rename_axis("age_bucket").reset_index()
+    return factors, multipliers
+
+
+def skater_features(pairs, history, bios, profiles, nhle_best):
+    """
+    Prior inputs for each (playerId, season, group) in pairs: age (Feb 1), NHL experience before that season
+    (capped at EXP_CAP), log of overall draft pick (0 if undrafted), undrafted flag, and best pre-NHL NHLe.
+    """
+    f = add_age(pairs[["playerId", "season", "group"]].drop_duplicates(["playerId", "season"]), bios)
+    f = f.merge(experience(history, profiles, f), on=["playerId", "season"], how="left")
+    f["experience"] = f["experience"].fillna(0).clip(upper=EXP_CAP)
+    f = f.merge(bios[["playerId", "draft_overall"]], on="playerId", how="left")
+    f["undrafted"] = f["draft_overall"].isna().astype(float)
+    f["log_pick"] = np.log(f["draft_overall"].fillna(1.0))        # undrafted: 0 here, the flag carries it
+    f = f.merge(nhle_best[["playerId", "nhle_ppg"]], on="playerId", how="left")
+    return f
+
+
+def _design(rows, inputs, fill):
+    X = rows[inputs].astype(float).copy()
+    if "nhle_ppg" in inputs:
+        X["nhle_ppg"] = X["nhle_ppg"].fillna(fill)                  # no pre-NHL season: position average
+    X.insert(0, "constant", 1.0)
+    return X
+
+
+def fit_prior(rows, inputs=PRIOR_INPUTS):
+    """
+    Per position (F, D): minutes-weighted least squares of actual GAR/60 on the inputs.
+    rows: skater-seasons with gar_60, toi, group and the inputs. Returns {group: model dict}.
+    """
+    models = {}
+    for g, d in rows.groupby("group"):
+        has = d["nhle_ppg"].notna()
+        fill = float(np.average(d.loc[has, "nhle_ppg"], weights=d.loc[has, "toi"]))
+        X = _design(d, inputs, fill)
+        beta, se, r2 = wls(d["gar_60"], X, d["toi"])
+        models[g] = {"inputs": list(inputs), "coef": pd.Series(beta, index=X.columns),
+                     "se": pd.Series(se, index=X.columns), "r2": r2, "n": len(d), "fill": fill}
+    return models
+
+
+def apply_prior(rows, models):
+    """Expected GAR/60 from a fitted prior model, for every row whose group has a model (NaN otherwise)."""
+    out = pd.Series(np.nan, index=rows.index)
+    for g, m in models.items():
+        sel = rows["group"] == g
+        if sel.any():
+            out[sel] = _design(rows[sel], m["inputs"], m["fill"]).to_numpy() @ m["coef"].to_numpy()
+    return out
+
+
+def model_table(models):
+    """Coefficients and standard errors side by side, one column pair per position."""
+    return pd.concat({g: pd.DataFrame({"coef": m["coef"], "se": m["se"]}) for g, m in models.items()}, axis=1)
+
+
+def eligible(rows, version):
+    """Who gets the prior under each version (see VERSIONS)."""
+    if version in ("a", "d"):
+        return pd.Series(True, index=rows.index)
+    if version == "b":
+        return rows["experience"] <= 3
+    if version == "c":
+        return rows["age"] <= 25
+    raise ValueError(version)
+
+
+def candidates(history, targets):
+    """Every skater the projection covers for each target season (a season in target-3 to target-1)."""
+    sk = history[history["group"] != "G"].sort_values("season")
+    out = []
+    for t in targets:
+        p = sk[sk["season"].between(t - 3, t - 1)].groupby("playerId")["group"].last().reset_index()
+        out.append(p.assign(season=t))
+    return pd.concat(out, ignore_index=True)
+
+
+def fit_rows(history, features, targets, min_toi=PRIOR_MIN_TOI):
+    """Skater-seasons used to fit the prior: min_toi+ minutes in a target season (rookies included)."""
+    sk = history[(history["group"] != "G") & history["season"].isin(targets) & (history["toi"] >= min_toi)]
+    sk = sk.assign(gar_60=sk["gar"] / sk["toi"] * 60)[["playerId", "season", "name", "toi", "gar_60"]]
+    return sk.merge(features, on=["playerId", "season"], how="inner")
+
+
+def first_seasons(history):
+    """Each player's first season in our NHL data (2008-09 on)."""
+    return history.groupby("playerId")["season"].min()
