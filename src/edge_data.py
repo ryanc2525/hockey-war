@@ -6,6 +6,8 @@ NHL EDGE data: download once per season, save locally, read from the file after 
     edge = build_table(Path("../data/edge_raw/2025-26"))
     download_bios(player_ids, Path("../data/bio_raw"))        # age and draft position
     bios = build_bio_table(Path("../data/bio_raw"), 2026)
+    download_drafts(range(2019, 2027), Path("../data/draft_raw"))   # every pick, one file per draft year
+    drafts = build_draft_table(Path("../data/draft_raw"))
 
 Each player's raw response is saved as its own JSON file, so the download can be
 stopped and restarted without losing progress, and new fields can be pulled out
@@ -25,6 +27,7 @@ import pandas as pd
 
 BASE_URL = "https://api-web.nhle.com/v1/edge/skater-detail/{player_id}/{season}/2"
 BIO_URL = "https://api-web.nhle.com/v1/player/{player_id}/landing"
+DRAFT_URL = "https://records.nhl.com/site/api/draft?cayenneExp=draftYear={year}"   # has playerId, unlike /v1/draft/picks
 
 # The NHL's server rejects Python's default identity (HTTP 403), so identify as a normal browser
 HEADERS = {
@@ -178,3 +181,51 @@ def draft_text(row):
         return "Undrafted"
     team = f" ({row['draft_team']})" if isinstance(row.get("draft_team"), str) else ""
     return f"{int(row['draft_year'])} Draft, #{int(row['draft_overall'])} overall{team}"
+
+
+# ---------------------------------------------------------------------------
+# Draft classes (records.nhl.com)
+# ---------------------------------------------------------------------------
+def fetch_draft(year, retries=3):
+    """Every pick in one draft year."""
+    return fetch_url(DRAFT_URL.format(year=year), f"draft {year}", retries)
+
+
+def download_drafts(years, raw_dir, pause=0.3):
+    """Save each draft year as raw_dir/<year>.json. Years already saved are skipped."""
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    failed = []
+    for year in years:
+        path = raw_dir / f"{year}.json"
+        if path.exists():
+            continue
+        data = fetch_draft(year)
+        if data is None:
+            failed.append(year)
+        else:
+            path.write_text(json.dumps(data))
+        time.sleep(pause)
+    print(f"Draft years saved: {len(list(raw_dir.glob('*.json')))}" + (f"; failed (run again): {failed}" if failed else ""))
+    return failed
+
+
+def build_draft_table(raw_dir):
+    """
+    One row per pick: draft year, overall pick, round, drafting team, playerId, name, position (C/LW/RW/D/G),
+    group (F/D/G), birth date, amateur league and club. Picks without a playerId are dropped (count printed).
+    """
+    rows = []
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        rows += json.loads(f.read_text()).get("data", [])
+    d = pd.DataFrame(rows)
+    missing = d["playerId"].isna().sum()
+    if missing:
+        print(f"{missing} pick(s) without a playerId dropped")
+    d = d[d["playerId"].notna()].copy()
+    d["playerId"] = d["playerId"].astype(int)
+    d["group"] = d["position"].map({"D": "D", "G": "G"}).fillna("F")
+    cols = {"draftYear": "draft_year", "overallPickNumber": "pick", "roundNumber": "round", "triCode": "team",
+            "playerId": "playerId", "playerName": "name", "position": "position", "group": "group",
+            "birthDate": "birth_date", "amateurLeague": "amateur_league", "amateurClubName": "amateur_club"}
+    return d[list(cols)].rename(columns=cols).sort_values(["draft_year", "pick"]).reset_index(drop=True)

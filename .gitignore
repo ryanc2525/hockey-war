@@ -8,6 +8,8 @@ data/shots_raw/
 # Raw NHL EDGE downloads (one JSON per player, rebuildable)
 data/edge_raw/
 data/bio_raw/
+data/draft_raw/
+data/prospect_raw/
 
 # Jupyter / Python junk
 .ipynb_checkpoints/

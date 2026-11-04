@@ -280,14 +280,14 @@ def bucket_stats(res, bucket_col, order, groups=("F", "D"), merge_below=50, n_bo
 # ---------------------------------------------------------------------------
 # 6. NHLe for young players
 # ---------------------------------------------------------------------------
-def best_nhle(careers, factors, multipliers):
+def season_nhle(careers, factors, multipliers, min_gp=20):
     """
-    Each skater's best pre-NHL season as NHL points per game: his non-NHL seasons with 20+ GP before his
+    NHLe (NHL points per game) of every pre-NHL season: non-NHL seasons with min_gp+ GP before the player's
     first NHL season with 20+ GP, x the chosen factor (forward/defense factor where one exists) x the age
     multiplier. Leagues without a factor are skipped.
     """
     first = careers[(careers["league"] == "NHL") & (careers["gp"] >= 20)].groupby("playerId")["season"].min()
-    pre = careers[(careers["league"] != "NHL") & (careers["gp"] >= 20)].copy()
+    pre = careers[(careers["league"] != "NHL") & (careers["gp"] >= min_gp)].copy()
     pre = pre[pre["season"] < pre["playerId"].map(first).fillna(np.inf)]
     chosen = factors[factors["chosen"]]
     allf = chosen[chosen["group"] == "all"].set_index("league")["factor"]
@@ -297,11 +297,76 @@ def best_nhle(careers, factors, multipliers):
                          "prior_ppg": (pre["points"] / pre["gp"]).to_numpy(), "prior_age": pre["age"].to_numpy()},
                         index=pre.index)
     pre["nhle_ppg"] = nhle_predict(rows, allf, mult, by_group=pos).to_numpy()
-    pre = pre.dropna(subset=["nhle_ppg"]).sort_values("nhle_ppg", ascending=False)
-    best = pre.groupby("playerId").head(1)
-    return best[["playerId", "season", "league", "gp", "points", "age", "nhle_ppg"]] \
-        .rename(columns={"season": "nhle_season", "league": "nhle_league", "gp": "nhle_gp",
-                         "points": "nhle_points", "age": "nhle_age"}).reset_index(drop=True)
+    return pre.dropna(subset=["nhle_ppg"])
+
+
+NHLE_COLS = {"season": "nhle_season", "league": "nhle_league", "gp": "nhle_gp", "points": "nhle_points",
+             "age": "nhle_age"}
+
+
+def best_nhle(careers, factors, multipliers, rule="best20"):
+    """
+    One pre-NHL NHLe per skater (NHL points per game), by one of two rules:
+    - "best20" (default, notebooks 17-18): his best season with 20+ GP.
+    - "last2" (notebook 19): games-weighted NHLe of his last two pre-NHL seasons, counting seasons with 10+ GP.
+      Best-season picks lucky years and over-predicts; the last two seasons are the better guide.
+    For "last2", nhle_season/league/age describe his latest season and nhle_gp/points are totals.
+    """
+    if rule == "best20":
+        pre = season_nhle(careers, factors, multipliers, 20).sort_values("nhle_ppg", ascending=False)
+        best = pre.groupby("playerId").head(1)
+        return best[["playerId", "season", "league", "gp", "points", "age", "nhle_ppg"]] \
+            .rename(columns=NHLE_COLS).reset_index(drop=True)
+    if rule == "last2":
+        pre = season_nhle(careers, factors, multipliers, 10)
+        latest_two = pre.groupby("playerId")["season"].transform(lambda s: s >= sorted(s.unique())[-2:][0])
+        pre = pre[latest_two]
+
+        def summary(d):
+            last = d[d["season"] == d["season"].max()].sort_values("gp").iloc[-1]
+            return pd.Series({"season": last["season"], "league": last["league"], "gp": d["gp"].sum(),
+                              "points": d["points"].sum(), "age": last["age"],
+                              "nhle_ppg": np.average(d["nhle_ppg"], weights=d["gp"])})
+        out = pre.groupby("playerId").apply(summary, include_groups=False).reset_index()
+        return out.rename(columns=NHLE_COLS)
+    raise ValueError(f"unknown rule {rule}")
+
+
+def nhle_rules(careers, factors, multipliers, league_avg, shrink_games=20):
+    """
+    The four pre-NHL summaries compared in notebook 19, one row per skater (NHL points per game):
+    (i) best season with 20+ GP; (ii) best season with 10+ GP after shrinking it toward the games-weighted
+    NHLe of his other pre-NHL seasons (or league_avg[league] if he has none) with shrink_games games of weight;
+    (iii) most recent season with 20+ GP (most games if two leagues); (iv) games-weighted NHLe of his last two
+    pre-NHL seasons (10+ GP).
+    """
+    pre = season_nhle(careers, factors, multipliers, 10)
+
+    def rules(d):
+        out = {}
+        d20 = d[d["gp"] >= 20]
+        out["i"] = d20["nhle_ppg"].max() if len(d20) else np.nan
+        gp, x = d["gp"].to_numpy(dtype=float), d["nhle_ppg"].to_numpy()
+        shrunk = []
+        for k in range(len(d)):
+            others = np.arange(len(d)) != k
+            ref = (np.average(x[others], weights=gp[others]) if others.any()
+                   else league_avg.get(d["league"].iloc[k], np.nan))
+            shrunk.append((gp[k] * x[k] + shrink_games * ref) / (gp[k] + shrink_games))
+        out["ii"] = np.nanmax(shrunk) if np.isfinite(shrunk).any() else np.nan
+        out["iii"] = (d20[d20["season"] == d20["season"].max()].sort_values("gp")["nhle_ppg"].iloc[-1]
+                      if len(d20) else np.nan)
+        last2 = d[d["season"] >= sorted(d["season"].unique())[-2:][0]]
+        out["iv"] = np.average(last2["nhle_ppg"], weights=last2["gp"])
+        return pd.Series(out)
+    return pre.groupby("playerId").apply(rules, include_groups=False)
+
+
+def league_average_nhle(careers, factors, multipliers, last_season, min_gp=10):
+    """Games-weighted NHLe of every pre-NHL player-season in each league, seasons through last_season."""
+    pre = season_nhle(careers, factors, multipliers, min_gp)
+    pre = pre[pre["season"] <= last_season]
+    return pre.groupby("league").apply(lambda d: np.average(d["nhle_ppg"], weights=d["gp"]), include_groups=False)
 
 
 def wls(y, X, w):
@@ -551,3 +616,63 @@ def fit_rows(history, features, targets, min_toi=PRIOR_MIN_TOI):
 def first_seasons(history):
     """Each player's first season in our NHL data (2008-09 on)."""
     return history.groupby("playerId")["season"].min()
+
+
+# ---------------------------------------------------------------------------
+# 11. Prospects (notebook 19)
+# ---------------------------------------------------------------------------
+LEAGUE_GROUPS = {
+    "CHL": {"OHL", "WHL", "QMJHL"},
+    "NCAA": {"NCAA"},
+    "KHL": {"KHL", "VHL", "MHL"},
+    "AHL": {"AHL"},
+    "Europe": {"SHL", "Liiga", "NL", "DEL", "HockeyAllsvenskan", "Czechia", "ICEHL", "Mestis", "SL", "Slovakia",
+               "J20 Nationell", "U20 SM-liiga", "Czechia2", "DEL2", "Norway", "Denmark", "EIHL", "Ligue Magnus"},
+}
+
+
+def league_group(league):
+    """CHL, NCAA, KHL (with VHL and MHL), AHL, Europe, or other (USHL, BCHL, ECHL, ...)."""
+    for name, leagues in LEAGUE_GROUPS.items():
+        if league in leagues:
+            return name
+    return "other" if isinstance(league, str) else np.nan
+
+
+def prospect_table(drafts, profiles, projected_ids, season=2025, max_age=24, excluded=()):
+    """
+    Who is a prospect for season+1: drafted, not already in the NHL projection, played a regular-season game
+    in `season` in some league (tournaments in `excluded` don't count), and max_age or younger on Feb 1 of
+    season+2 (2027 for 2026-27). Returns (prospects, exclusion counts). Each prospect gets his `season` league
+    with the most games, plus his games and points there.
+    """
+    from forecast import season_age
+    steps = {"drafted picks with a playerId": len(drafts)}
+    have = set(profiles["playerId"])
+    d = drafts[drafts["playerId"].isin(have)]
+    steps["  no profile (download missing or failed)"] = len(drafts) - len(d)
+    reg = d["playerId"].isin(projected_ids)
+    steps["  already in the NHL projection (played 2023-24 to 2025-26)"] = int(reg.sum())
+    d = d[~reg]
+    played = profiles[(profiles["season"] == season) & (profiles["gameTypeId"] == 2) & (profiles["gp"] > 0)
+                      & ~profiles["league"].isin(excluded)]
+    main = (played.groupby(["playerId", "league"], as_index=False)[["gp", "points"]].sum()
+            .sort_values("gp", ascending=False).groupby("playerId").head(1).set_index("playerId"))
+    ok = d["playerId"].isin(main.index)
+    steps[f"  didn't play a regular-season game in {season}-{str(season + 1)[-2:]}"] = int((~ok).sum())
+    d = d[ok].copy()
+    d["age"] = season_age(pd.to_datetime(d["birth_date"]), np.full(len(d), season + 1))
+    young = d["age"] <= max_age
+    steps[f"  older than {max_age} on Feb 1, {season + 2}"] = int((~young).sum())
+    d = d[young].copy()
+    d = d.drop_duplicates("playerId", keep="last")             # re-drafted players: keep the latest pick
+    d = d.join(main.rename(columns={"league": "league_last", "gp": "gp_last", "points": "points_last"}), on="playerId")
+    steps["prospects"] = len(d)
+    return d.reset_index(drop=True), pd.Series(steps, name="players")
+
+
+def prospect_range(proj_war_60, group, rookie_rows, luck, minutes, qs=(10, 50, 90)):
+    """10th/50th/90th WAR/60 for a projection, from the rookie z percentiles at a given number of minutes."""
+    r = rookie_rows.set_index("group")
+    sd = np.sqrt(luck.loc[group, "a"] + luck.loc[group, "b"] / minutes)
+    return {f"war_60_p{q}": proj_war_60 + r.loc[group, f"z_p{q}"] * sd for q in qs}
