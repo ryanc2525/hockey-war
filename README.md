@@ -8,7 +8,7 @@ Can one number capture how much a hockey player helped his team win in a season,
 
 The project has two parts:
 
-| | **Almanac** (now) | **Forecast** (later) |
+| | **Almanac** (now) | **Forecast** (in progress) |
 |---|---|---|
 | Question | How well did he play *this season*? | How will he play *next season*? |
 | Output | Single-season WAR and player cards | Projections with a best case, worst case, and most likely range |
@@ -73,12 +73,43 @@ Which goalie stats repeat from season to season (1000+ minutes both seasons, eac
 
 Freezing the puck is the one goalie skill that clearly travels with a goalie to a new team. Stopping more goals than expected barely repeats, so one great season says little about the next.
 
-### Forecast: true talent and aging
+## Forecast, Phase 1: projections for 2026-27
 
-- **Three seasons beat one.** Blending a skater's last 3 seasons and pulling him toward his position's average (1,500 minutes' worth) predicts next season's WAR rate 34% better than last season alone (error 0.268 vs. 0.404 GAR per 60, backtested on 14 seasons from 2009-10 to 2025-26).
-- **Goalies barely beat average.** The best goalie blend is only 2% better than calling every goalie league average.
-- **Aging:** centered so the league as a whole doesn't age up or down, forwards peak around 27 (+0.03 WAR per 1,000 minutes a year at 25, -0.06 at 30, -0.10 at 33), defensemen around 26 and decline slowly (-0.02 a year at 30 to 33), and goalies hold up into their early 30s. Aging lowers the backtest error slightly for all three groups (0.3% to 1%).
-- Projections stay private for now.
+Almanac says how a player did. Forecast tries to say how he'll do next. Phase 1 (notebooks 15-20) builds the pieces: a projection for every NHL player and drafted prospect, how wide each projection's range should be, and an EA NHL-style rating. Every step is tested the same way: build it on older seasons, then check it on seasons it never saw.
+
+### True talent (notebook 15)
+
+One season is a noisy read on a player. Blending his last three seasons and pulling him toward the average player at his position predicts next season's WAR rate **34% better** than last season alone. Aging curves adjust for where he is in his career: forwards peak around 27, defensemen around 26. Goalies are the exception. Their results barely repeat, so their history is only 2% better than calling every goalie league average.
+
+### NHLe: translating junior, college and European scoring (notebook 16)
+
+Each league gets a factor that turns its scoring into NHL points per game, learned from players who jumped to the NHL the next season. Forwards and defensemen get separate factors where there's enough data, and younger players get a boost because they're still improving. On rookies from 2018-19 on (factors fit only on earlier years), it predicts their scoring **15% better** than calling every rookie the average for his position. A player's pre-NHL record is summed up by his last two seasons, not his best one, because a player's best season is usually his luckiest (notebook 19).
+
+### Development ranges (notebook 17)
+
+Every projection misses. Looking at how far players beat or miss their projection showed that **more than half of a surprise season is luck**: about 55% for a forward over a full season, 60% for a defenseman, and 87% for a goalie. Most of the rest is one-year change like a new role, new linemates or health. Young players and recent top picks beat their projections more often, so their ranges are wider. Tested on 2018-19 onward with ranges built only on earlier seasons, the 90% ranges caught 87-88% of what actually happened.
+
+### Player-specific prior (notebook 18)
+
+The true-talent blend used to pull everyone toward the same average. Now each skater is pulled toward his own expected level, built from his pre-NHL scoring, draft position, age and NHL experience. That lowered the backtest error from **0.273 to 0.267** GAR per 60, and by about **4% for players 23 and under**. It also mostly fixed a pattern from notebook 17, where top picks kept beating their projections.
+
+### Prospects (notebook 19)
+
+Drafted players who haven't made the NHL yet get projections too: **1,167 prospects** from the 2019 to 2026 drafts, based on their last two seasons of scoring. A prospect's projection means "what he'd do if he played NHL minutes this season." For forwards that beat the position average on past rookies. For defensemen nothing did, so defense prospects get the position average.
+
+### OVR ratings (notebook 20)
+
+Every player and prospect gets an EA NHL-style overall rating on a **fixed 40-99 scale**. Projected WAR is first converted to a full-time role at his position, so a 90 forward and a 90 defenseman are worth the same to a team. Replacement level is 70, the median NHL regular is about 80, and **Connor McDavid is 98**. The scale is frozen, so in a multi-year simulation ratings can rise and fall league-wide instead of being reshuffled every season.
+
+### What it doesn't do well yet
+
+- **Goalies rate too high.** Goalie results barely repeat, so every goalie, backups included, gets pulled toward the league-average goalie, who is well above replacement level. Every goalie who played regularly last season rates between 81 and 95.
+- **Defense is the hardest part to measure.** Some defensemen who play heavy minutes rate as replacement level, around 70. Coaches clearly value them more than the model does.
+- **Prospect ratings mean "if he plays."** Whether a prospect is actually ready comes later, in the simulator's call-up logic.
+
+**Next:** Phase 2, the season simulator: who plays how much, which prospects get called up, and thousands of simulated seasons.
+
+**Data:** the full projection tables and the downloaded NHL profiles and draft data stay private on my computer. Only the code and notebooks are public.
 
 ## How the model changed across versions
 
@@ -120,6 +151,11 @@ Freezing the puck is the one goalie skill that clearly travels with a goalie to 
 | 13 | [`win_probability`](notebooks/13_win_probability.ipynb) | Win probability model, WPA, expected WPA and Clutch; is clutch repeatable? |
 | 14 | [`history_and_goalies`](notebooks/14_history_and_goalies.ipynb) | Skater WAR back to 2008-09; goalie WAR v0 and team check; which goalie stats repeat |
 | 15 | [`true_talent_and_aging`](notebooks/15_true_talent_and_aging.ipynb) | True-talent WAR (backtested blend of 3 seasons), aging curves for F, D and G, private 2026-27 projections |
+| 16 | [`nhle`](notebooks/16_nhle.ipynb) | NHL equivalencies for pre-NHL leagues, by position and age |
+| 17 | [`development_ranges`](notebooks/17_development_ranges.ipynb) | How far players beat or miss their projection: luck vs. change, and range calibration |
+| 18 | [`player_specific_prior`](notebooks/18_player_specific_prior.ipynb) | Each skater pulled toward his own expected level |
+| 19 | [`prospects`](notebooks/19_prospects.ipynb) | Draft classes 2019-2026, the pre-NHL rule, and 1,167 prospect projections |
+| 20 | [`ovr_ratings`](notebooks/20_ovr_ratings.ipynb) | An EA-style 40-99 rating on a frozen scale |
 
 The model and card code live in [`src/`](src/) so every notebook uses the same functions.
 
@@ -167,12 +203,14 @@ Problems found and decisions made along the way:
 
 **Forecast**
 - [x] True talent (regression to the mean) and aging curves
-- [ ] Projection ranges, then a team builder and a season simulator
+- [x] Phase 1: NHLe, development ranges, player-specific prior, prospects and OVR ratings
+- [ ] Phase 2: the season simulator, then a team builder
 
 ## Data
 
 - **[MoneyPuck.com](https://moneypuck.com/data.htm):** season-level skater stats. Raw data is not included in this repo (see [`data/README.md`](data/README.md)).
 - **NHL EDGE and player profiles** (api-web.nhle.com): downloaded by notebook 08 and kept locally.
+- **NHL draft classes** (records.nhl.com) and prospect profiles: downloaded by notebook 19 and kept locally.
 
 **Credit:** player stats from MoneyPuck.com. Skating, shot speed, and player profiles from the NHL.
 
