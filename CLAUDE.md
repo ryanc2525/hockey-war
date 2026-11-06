@@ -9,8 +9,15 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
 - data/cards_<label>.csv: full card table per season (gitignored). data/cards_2025-26.csv is the
   fixed reference for notebook 10's regression check; never overwrite it.
 - notebooks/01–10: how it was built, step by step
-- app.py: Streamlit app. Search a player, pick a season, and see his card. Reads
-  app_data/cards.csv only (2021-22 to 2025-26); never recomputes WAR or calls an NHL API.
+- app.py: Streamlit app, two pages (st.navigation; st.set_page_config only here). Never recomputes WAR
+  or calls an NHL API.
+  - app_pages/almanac.py (default page): search a player, pick a season, see his card. Reads app_data/ only
+    (2021-22 to 2025-26).
+  - app_pages/forecast.py: 2026-27 OVR and projections. Reads data/forecast_table_2026-27.csv (notebook 20,
+    gitignored), so it's local only; without the file it shows a message and stops. HOCKEY_FORECAST_TABLE
+    overrides the path.
+- forecast.current_projections(): the 2026-27 projection for every player (nb18 skaters, nb21 goalies and
+  goalie prospects, nb19 skater prospects). ratings.py: OVR scale, skater and goalie anchors, LOCKED.
 - app_data/cards.csv: slim public card table (committed), one row per player per season, written
   by notebook 10 via player_card.export_app_table(by_season=True). Only columns the card draws;
   no raw MoneyPuck situation stats. (Notebook 09 wrote the earlier 2025-26-only version.)

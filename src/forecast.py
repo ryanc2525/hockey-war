@@ -6,6 +6,7 @@ Forecast building blocks: true-talent WAR and aging curves, for skaters and goal
     tt = true_talent(history, 2026, weights=(1, 1, 1), reg_minutes=1000)
     raw, curve = aging_curve(history, bios)                  # bios = edge_data.build_bio_table(...)
     proj = project(history, bios, 2026, (1, 1, 1), 1000, aging="adjust_then_blend", curve=curve)
+    current = current_projections()                          # 2026-27 for every player and prospect (nb18, 19, 21)
 
 True talent = a player's GAR per 60 over up to 3 prior seasons (weight x minutes), blended with reg_minutes
 of his group's average (F, D or G) from the most recent prior season. Optional priors (notebook 18) replace the
@@ -13,6 +14,8 @@ group average with a player's own expected GAR/60, with prior_reg minutes of wei
 GAR is in goals and WAR = GAR / GOALS_PER_WIN.
 season = MoneyPuck start year (2025 = 2025-26). Age in a season = age on February 1 of its end year.
 """
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -259,3 +262,69 @@ def grid(history, targets, weight_sets, reg_list, min_target_toi):
     """RMSE for every weights x reg_minutes setting (rows = weights, columns = reg_minutes)."""
     return pd.DataFrame({reg: {str(w): rmse(backtest(history, targets, w, reg, min_target_toi)) for w in weight_sets}
                          for reg in reg_list})
+
+
+# ---------------------------------------------------------------------------
+# 5. The current projection for every player (notebooks 18, 19 and 21 in one table)
+# ---------------------------------------------------------------------------
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+SOURCES = {"skater": "NHL skater (nb18)", "goalie": "NHL goalie (nb21)",
+           "skater_prospect": "skater prospect (nb19)", "goalie_prospect": "goalie prospect (nb21)"}
+
+
+def current_projections(data_dir=DATA_DIR, label="2026-27"):
+    """
+    The latest projected WAR/60 for every NHL player and prospect, one row per player.
+
+    Where each row comes from (the 'source' column):
+      - NHL skaters:      projections_<label>.csv, new_proj_war_60 (notebook 18, player-specific prior)
+      - NHL goalies:      goalie_projections_<label>.csv, new_proj_war_60 (notebook 21, goalie prior).
+                          Notebook 18's goalie rows are replaced.
+      - skater prospects: prospects_<label>.csv, proj_war_60 (notebook 19)
+      - goalie prospects: goalie_projections_<label>.csv (notebook 21). Notebook 19's placeholder is replaced.
+
+    Columns: playerId, name, team, position, group, age, prospect, played_2025_26, proj_war_60,
+    war_60_p10, war_60_p90 (skater prospects only), d_rank_prior (D prospects only), source.
+    A prospect's team is his draft team.
+    """
+    data_dir = Path(data_dir)
+    files = {k: data_dir / f"{k}_{label}.csv" for k in ["projections", "goalie_projections", "prospects"]}
+    for path in files.values():
+        if not path.exists():
+            raise FileNotFoundError(f"{path} is missing; run notebooks 18, 19 and 21 first")
+    proj = pd.read_csv(files["projections"])
+    gproj = pd.read_csv(files["goalie_projections"]).set_index("playerId")
+    pros = pd.read_csv(files["prospects"])
+
+    # NHL players: skaters keep notebook 18's projection; goalies take notebook 21's
+    is_g = proj["position"] == "G"
+    nhl = pd.DataFrame({"playerId": proj["playerId"], "name": proj["name"], "team": proj["team"],
+                        "position": proj["position"], "group": proj["position"].map(lambda p: p if p in ("D", "G") else "F"),
+                        "age": proj["age"], "prospect": False, "played_2025_26": proj["played_2025_26"],
+                        "proj_war_60": proj["new_proj_war_60"]})
+    g_ids = proj.loc[is_g, "playerId"]
+    missing = set(g_ids) - set(gproj.index[~gproj["prospect"]])
+    assert not missing, f"NHL goalies missing from notebook 21's file: {sorted(missing)}"
+    nhl.loc[is_g, "proj_war_60"] = gproj.loc[g_ids, "new_proj_war_60"].to_numpy()
+    nhl["source"] = np.where(is_g, SOURCES["goalie"], SOURCES["skater"])
+
+    # Prospects: skaters keep notebook 19's projection and range; goalies take notebook 21's prior
+    pg = pros["group"] == "G"
+    pr = pd.DataFrame({"playerId": pros["playerId"], "name": pros["name"], "team": pros["draft_team"],
+                       "position": pros["position"].replace({"LW": "L", "RW": "R"}), "group": pros["group"],
+                       "age": pros["age"], "prospect": True, "played_2025_26": False,
+                       "proj_war_60": pros["proj_war_60"],
+                       "war_60_p10": pros["war_60_p10"].where(~pg), "war_60_p90": pros["war_60_p90"].where(~pg),
+                       "d_rank_prior": pros["d_rank_prior"]})
+    gp_ids = pros.loc[pg, "playerId"]
+    missing = set(gp_ids) - set(gproj.index[gproj["prospect"]])
+    assert not missing, f"goalie prospects missing from notebook 21's file: {sorted(missing)}"
+    pr.loc[pg, "proj_war_60"] = gproj.loc[gp_ids, "new_proj_war_60"].to_numpy()
+    pr["source"] = np.where(pg, SOURCES["goalie_prospect"], SOURCES["skater_prospect"])
+
+    out = pd.concat([nhl, pr], ignore_index=True)
+    out = out[["playerId", "name", "team", "position", "group", "age", "prospect", "played_2025_26",
+               "proj_war_60", "war_60_p10", "war_60_p90", "d_rank_prior", "source"]]
+    assert out["playerId"].is_unique, "a player is in both the NHL and the prospect lists"
+    assert out["proj_war_60"].notna().all(), "a player has no projection"
+    return out
