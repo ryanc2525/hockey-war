@@ -546,27 +546,29 @@ def skater_features(pairs, history, bios, profiles, nhle_best):
     return f
 
 
-def _design(rows, inputs, fill):
+def _design(rows, inputs, fill, fill_col="nhle_ppg"):
     X = rows[inputs].astype(float).copy()
-    if "nhle_ppg" in inputs:
-        X["nhle_ppg"] = X["nhle_ppg"].fillna(fill)                  # no pre-NHL season: position average
+    if fill_col in inputs:
+        X[fill_col] = X[fill_col].fillna(fill)                      # missing (no pre-NHL season): group average
     X.insert(0, "constant", 1.0)
     return X
 
 
-def fit_prior(rows, inputs=PRIOR_INPUTS):
+def fit_prior(rows, inputs=PRIOR_INPUTS, fill_col="nhle_ppg"):
     """
-    Per position (F, D): minutes-weighted least squares of actual GAR/60 on the inputs.
-    rows: skater-seasons with gar_60, toi, group and the inputs. Returns {group: model dict}.
+    Per group (F, D, or G): minutes-weighted least squares of actual GAR/60 on the inputs.
+    rows: player-seasons with gar_60, toi, group and the inputs. Returns {group: model dict}.
+    fill_col: the one input that may be missing (NHLe for skaters, pre-NHL save% for goalies); missing values
+    get the minutes-weighted average of the rows that have it.
     """
     models = {}
     for g, d in rows.groupby("group"):
-        has = d["nhle_ppg"].notna()
-        fill = float(np.average(d.loc[has, "nhle_ppg"], weights=d.loc[has, "toi"]))
-        X = _design(d, inputs, fill)
+        has = d[fill_col].notna() if fill_col in d else pd.Series(False, index=d.index)
+        fill = float(np.average(d.loc[has, fill_col], weights=d.loc[has, "toi"])) if has.any() else 0.0
+        X = _design(d, inputs, fill, fill_col)
         beta, se, r2 = wls(d["gar_60"], X, d["toi"])
         models[g] = {"inputs": list(inputs), "coef": pd.Series(beta, index=X.columns),
-                     "se": pd.Series(se, index=X.columns), "r2": r2, "n": len(d), "fill": fill}
+                     "se": pd.Series(se, index=X.columns), "r2": r2, "n": len(d), "fill": fill, "fill_col": fill_col}
     return models
 
 
@@ -576,7 +578,8 @@ def apply_prior(rows, models):
     for g, m in models.items():
         sel = rows["group"] == g
         if sel.any():
-            out[sel] = _design(rows[sel], m["inputs"], m["fill"]).to_numpy() @ m["coef"].to_numpy()
+            X = _design(rows[sel], m["inputs"], m["fill"], m.get("fill_col", "nhle_ppg"))
+            out[sel] = X.to_numpy() @ m["coef"].to_numpy()
     return out
 
 
@@ -676,3 +679,176 @@ def prospect_range(proj_war_60, group, rookie_rows, luck, minutes, qs=(10, 50, 9
     r = rookie_rows.set_index("group")
     sd = np.sqrt(luck.loc[group, "a"] + luck.loc[group, "b"] / minutes)
     return {f"war_60_p{q}": proj_war_60 + r.loc[group, f"z_p{q}"] * sd for q in qs}
+
+
+# ---------------------------------------------------------------------------
+# 12. Goalie prior (notebook 21)
+# ---------------------------------------------------------------------------
+# What a goalie is regressed toward, instead of the league-average goalie: an expected GAR/60 from his NHL
+# experience, age, career minutes, last season's minutes and pre-NHL save%, fit on what such goalies did.
+G_PRIOR_MIN_TOI = 500                        # goalie-seasons used to fit the prior
+GOALIE_VERSIONS = {"a": ["experience", "age"],
+                   "b": ["experience", "age", "log_career"],
+                   "c": ["experience", "age", "log_career", "last_k"]}
+SHOTS_PER_GAME = 28                          # stand-in for shots against when a league only lists save%
+
+
+def _clock_minutes(t):
+    """'3085:00' -> 3085.0 (NaN when missing)."""
+    if not isinstance(t, str) or ":" not in t:
+        return np.nan
+    m, s = t.split(":")
+    return int(m) + int(s) / 60
+
+
+def load_goalie_seasons(*profile_dirs):
+    """
+    One row per goalie seasonTotals entry (regular season only) in the profile folders: league, games,
+    save %, shots and goals against, minutes. A player found in more than one folder is read once (first folder).
+    """
+    import json
+    rows, seen = [], set()
+    for folder in profile_dirs:
+        for path in sorted(folder.glob("*.json")):
+            d = json.loads(path.read_text())
+            if d.get("position") != "G" or d["playerId"] in seen:
+                continue
+            seen.add(d["playerId"])
+            name = f"{d['firstName']['default']} {d['lastName']['default']}"
+            for s in d.get("seasonTotals", []):
+                if s.get("gameTypeId") != 2:
+                    continue
+                rows.append({"playerId": d["playerId"], "name": name, "season": s["season"] // 10000,
+                             "league": s.get("leagueAbbrev"), "gp": s.get("gamesPlayed") or 0,
+                             "save_pct": s.get("savePctg"), "shots_against": s.get("shotsAgainst"),
+                             "goals_against": s.get("goalsAgainst"), "minutes": _clock_minutes(s.get("timeOnIce"))})
+    return pd.DataFrame(rows)
+
+
+def first_nhl_goalie_season(history, goalie_seasons):
+    """Each goalie's first NHL season that counts as experience: 500+ minutes from 2008-09 (MoneyPuck), or
+    10+ games before that (profiles), prorated for short seasons."""
+    g = history[history["group"] == "G"]
+    mp = g[g["toi"] >= cutoff(g["season"], EXP_MIN["G"])].groupby("playerId")["season"].min()
+    p = goalie_seasons[(goalie_seasons["league"] == "NHL") & (goalie_seasons["season"] < 2008)]
+    p = p.groupby(["playerId", "season"], as_index=False)["gp"].sum()
+    early = p[p["gp"] >= cutoff(p["season"], EXP_GP_PRE_2008["G"])].groupby("playerId")["season"].min()
+    return pd.concat([early, mp]).groupby(level=0).min()
+
+
+def relative_save_pct(goalie_seasons, min_gp=10, min_goalies=3):
+    """
+    Every non-NHL goalie season with a save% and min_gp+ games, measured against its league-season average:
+    rel = (save% - league average) x 100, in points of save% (+1.0 = .911 in a league that averages .901).
+    League-season averages are shots-weighted over the goalies in our profiles (NHL goalies and drafted
+    prospects; a missing shot count weighs games x SHOTS_PER_GAME), and only league-seasons with min_goalies+
+    such goalies are used.
+    shots = shots faced: the profile's count, or (shots_imputed) games x that league-season's average shots
+    per game from goalies who have a count (SHOTS_PER_GAME if nobody in that league-season has one).
+    """
+    p = goalie_seasons[(goalie_seasons["league"] != "NHL") & goalie_seasons["save_pct"].notna()
+                       & (goalie_seasons["gp"] >= min_gp)].copy()
+    counted = pd.to_numeric(p["shots_against"], errors="coerce")
+    counted = counted.where(counted > 0)
+    p["w"] = counted.fillna(p["gp"] * SHOTS_PER_GAME)
+    p["wsv"] = p["save_pct"] * p["w"]
+    lg = p.groupby(["league", "season"]).agg(wsv=("wsv", "sum"), w=("w", "sum"), goalies=("save_pct", "size"))
+    lg["league_avg"] = lg["wsv"] / lg["w"]
+    has = p.assign(c=counted)[counted.notna()]
+    per_game = has.groupby(["league", "season"])["c"].sum() / has.groupby(["league", "season"])["gp"].sum()
+    p = p.join(lg[["league_avg", "goalies"]], on=["league", "season"]).join(per_game.rename("shots_per_game"),
+                                                                           on=["league", "season"])
+    p = p[p["goalies"] >= min_goalies].copy()
+    p["rel"] = (p["save_pct"] - p["league_avg"]) * 100
+    p["shots_imputed"] = counted.reindex(p.index).isna()
+    p["shots"] = counted.reindex(p.index).fillna(p["gp"] * p["shots_per_game"].fillna(SHOTS_PER_GAME))
+    return p.drop(columns=["w", "wsv"])
+
+
+def shrink_save_pct(raw, shots, k):
+    """Pull a relative save% toward 0 (his league's average) by sample size: raw x shots / (shots + k)."""
+    return raw * shots / (shots + k)
+
+
+def pre_nhl_save_pct(goalie_seasons, first_nhl, before, min_gp=10, min_goalies=3, shrink_shots=None):
+    """
+    Pre-NHL save% above his league's average (see relative_save_pct), as known going into season `before`:
+    the games-weighted average of his last two seasons before both first_nhl and `before` (so a backtest never
+    sees seasons after its target, and the season in progress never counts).
+    Returns pre_sv_raw, pre_sv_shots (shots faced in those seasons) and pre_sv: pre_sv_raw shrunk toward 0
+    with shrink_shots (see shrink_save_pct), or pre_sv_raw itself when shrink_shots is None.
+    """
+    p = relative_save_pct(goalie_seasons, min_gp, min_goalies)
+    p = p[(p["season"] < p["playerId"].map(first_nhl).fillna(np.inf)) & (p["season"] < before)]
+    latest_two = p.groupby("playerId")["season"].transform(lambda s: s >= sorted(s.unique())[-2:][0])
+    p = p[latest_two].assign(x=lambda d: d["rel"] * d["gp"])
+    by = p.groupby("playerId")
+    out = pd.DataFrame({"pre_sv_raw": by["x"].sum() / by["gp"].sum(), "pre_sv_shots": by["shots"].sum(),
+                        "pre_sv_gp": by["gp"].sum(),
+                        "pre_sv_league": p.sort_values(["season", "gp"]).groupby("playerId")["league"].last()})
+    out["pre_sv"] = out["pre_sv_raw"] if shrink_shots is None else shrink_save_pct(out["pre_sv_raw"], out["pre_sv_shots"], shrink_shots)
+    return out.reset_index()
+
+
+def save_pct_repeat_k(rel, first_nhl):
+    """
+    How many shots of relative save% equal one "shot" of league average, from how much it repeats between a
+    goalie's consecutive pre-NHL seasons. Each season's leagues are combined (shots-weighted). The covariance
+    of season s with season s+1 is the spread of true talent (luck doesn't repeat); a season of n shots also
+    carries luck with variance p(1 - p) / n, so the share of a season's spread that is talent is n / (n + K)
+    with K = p(1 - p) / true variance. Returns a dict with the pieces.
+    """
+    p = rel[rel["season"] < rel["playerId"].map(first_nhl).fillna(np.inf)].assign(xr=lambda d: d["rel"] * d["shots"],
+                                                                                  xl=lambda d: d["league_avg"] * d["shots"])
+    s = p.groupby(["playerId", "season"]).agg(xr=("xr", "sum"), xl=("xl", "sum"), shots=("shots", "sum")).reset_index()
+    s["rel"], s["league_avg"] = s["xr"] / s["shots"], s["xl"] / s["shots"]
+    pairs = s.merge(s.assign(season=s["season"] - 1), on=["playerId", "season"], suffixes=("_1", "_2"))
+    x1, x2 = pairs["rel_1"] / 100, pairs["rel_2"] / 100                     # proportions of save%
+    true_var = float(np.cov(x1, x2)[0, 1])
+    pbar = float(np.average(s["league_avg"], weights=s["shots"]))
+    k = pbar * (1 - pbar) / true_var
+    return {"pairs": len(pairs), "corr": float(np.corrcoef(x1, x2)[0, 1]), "true_sd_points": np.sqrt(true_var) * 100,
+            "league_save_pct": pbar, "median_season_shots": float(s["shots"].median()), "K": k}
+
+
+def goalie_candidates(history, targets):
+    """Every goalie the projection covers for each target season (a season in target-3 to target-1)."""
+    g = history[history["group"] == "G"]
+    return pd.concat([g[g["season"].between(t - 3, t - 1)][["playerId"]].drop_duplicates().assign(season=t, group="G")
+                      for t in targets], ignore_index=True)
+
+
+def goalie_features(pairs, history, bios, profiles, goalie_seasons, first_nhl, shrink_shots=None):
+    """
+    Goalie prior inputs for each (playerId, season) in pairs: age (Feb 1), NHL experience before that season
+    (500+ minutes, prorated, capped at EXP_CAP), career NHL minutes before it (MoneyPuck from 2008-09, profile
+    minutes before that) as log_career = log(1 + minutes / 1000), last season's minutes in thousands (last_k)
+    and pre-NHL save% as known going into that season (pre_sv, shrunk with shrink_shots if given; pre_sv_raw
+    and pre_sv_shots too; NaN when unknown).
+    """
+    f = add_age(pairs[["playerId", "season"]].drop_duplicates().assign(group="G"), bios)
+    f = f.merge(experience(history, profiles, f), on=["playerId", "season"], how="left")
+    f["experience"] = f["experience"].fillna(0).clip(upper=EXP_CAP)
+    g = history[history["group"] == "G"][["playerId", "season", "toi"]]
+    early = goalie_seasons[(goalie_seasons["league"] == "NHL") & (goalie_seasons["season"] < 2008)]
+    early = early.groupby(["playerId", "season"], as_index=False)["minutes"].sum().rename(columns={"minutes": "toi"})
+    all_min = pd.concat([early, g], ignore_index=True)
+    m = f[["playerId", "season"]].merge(all_min, on="playerId", how="left", suffixes=("", "_h"))
+    m = m[m["season_h"] < m["season"]]
+    f = f.merge(m.groupby(["playerId", "season"])["toi"].sum().rename("career_min"), on=["playerId", "season"], how="left")
+    f["career_min"] = f["career_min"].fillna(0)
+    f["log_career"] = np.log1p(f["career_min"] / 1000)
+    last = g.assign(season=g["season"] + 1).rename(columns={"toi": "last_min"})
+    f = f.merge(last, on=["playerId", "season"], how="left")
+    f["last_min"] = f["last_min"].fillna(0)
+    f["last_k"] = f["last_min"] / 1000
+    sv = pd.concat([pre_nhl_save_pct(goalie_seasons, first_nhl, before=t, shrink_shots=shrink_shots).assign(season=t)
+                    for t in sorted(f["season"].unique())], ignore_index=True)
+    return f.merge(sv[["playerId", "season", "pre_sv", "pre_sv_raw", "pre_sv_shots"]], on=["playerId", "season"], how="left")
+
+
+def goalie_fit_rows(history, features, targets, min_toi=G_PRIOR_MIN_TOI):
+    """Goalie-seasons used to fit the prior: min_toi+ minutes in a target season (rookies included)."""
+    g = history[(history["group"] == "G") & history["season"].isin(targets) & (history["toi"] >= min_toi)]
+    g = g.assign(gar_60=g["gar"] / g["toi"] * 60)[["playerId", "season", "name", "toi", "gar_60"]]
+    return g.merge(features.drop(columns="group"), on=["playerId", "season"], how="inner").assign(group="G")
