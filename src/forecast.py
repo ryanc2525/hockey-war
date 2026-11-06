@@ -269,10 +269,11 @@ def grid(history, targets, weight_sets, reg_list, min_target_toi):
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 SOURCES = {"skater": "NHL skater (nb18)", "goalie": "NHL goalie (nb21)",
-           "skater_prospect": "skater prospect (nb19)", "goalie_prospect": "goalie prospect (nb21)"}
+           "skater_prospect": "skater prospect (nb19)", "goalie_prospect": "goalie prospect (nb21)",
+           "new": "new to data (nb22)"}
 
 
-def current_projections(data_dir=DATA_DIR, label="2026-27"):
+def current_projections(data_dir=DATA_DIR, label="2026-27", include_new=True):
     """
     The latest projected WAR/60 for every NHL player and prospect, one row per player.
 
@@ -282,6 +283,8 @@ def current_projections(data_dir=DATA_DIR, label="2026-27"):
                           Notebook 18's goalie rows are replaced.
       - skater prospects: prospects_<label>.csv, proj_war_60 (notebook 19)
       - goalie prospects: goalie_projections_<label>.csv (notebook 21). Notebook 19's placeholder is replaced.
+      - new players:      new_players_<label>.csv (notebook 22: on a 2026-27 roster but not in the files above),
+                          projected with notebook 19's or 21's prior; only if the file exists and include_new.
 
     Columns: playerId, name, team, position, group, age, prospect, played_2025_26, proj_war_60,
     war_60_p10, war_60_p90 (skater prospects only), d_rank_prior (D prospects only), source.
@@ -322,7 +325,17 @@ def current_projections(data_dir=DATA_DIR, label="2026-27"):
     pr.loc[pg, "proj_war_60"] = gproj.loc[gp_ids, "new_proj_war_60"].to_numpy()
     pr["source"] = np.where(pg, SOURCES["goalie_prospect"], SOURCES["skater_prospect"])
 
-    out = pd.concat([nhl, pr], ignore_index=True)
+    parts = [nhl, pr]
+    new_file = data_dir / f"new_players_{label}.csv"
+    if include_new and new_file.exists():
+        nw = pd.read_csv(new_file)
+        parts.append(pd.DataFrame({"playerId": nw["playerId"], "name": nw["name"], "team": nw["team"],
+                                   "position": nw["position"].replace({"LW": "L", "RW": "R"}), "group": nw["group"],
+                                   "age": nw["age"], "prospect": False, "played_2025_26": False,
+                                   "proj_war_60": nw["proj_war_60"], "war_60_p10": nw["war_60_p10"],
+                                   "war_60_p90": nw["war_60_p90"], "d_rank_prior": nw["d_rank_prior"],
+                                   "source": SOURCES["new"]}))
+    out = pd.concat(parts, ignore_index=True)
     out = out[["playerId", "name", "team", "position", "group", "age", "prospect", "played_2025_26",
                "proj_war_60", "war_60_p10", "war_60_p90", "d_rank_prior", "source"]]
     assert out["playerId"].is_unique, "a player is in both the NHL and the prospect lists"

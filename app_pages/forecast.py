@@ -21,6 +21,9 @@ SEASON = "2026-27"
 DEFAULT_TEAM = "DET"
 
 GROUP_NAMES = {"F": "Forward", "D": "Defenseman", "G": "Goalie"}
+NO_ORG = "No NHL org"                # team shown for players not with an NHL organization
+# Statuses (notebook 22) that count as the NHL roster on opening night: disputes included
+NHL_LEVEL = ["NHL roster", "NHL org, off active roster", "suspended / holdout", "unsigned RFA"]
 GROUP_FILTER = {"All positions": None, "Forwards": "F", "Defensemen": "D", "Goalies": "G"}
 
 
@@ -31,6 +34,9 @@ def load_forecast(path, file_mtime):
     table = pd.read_csv(path)
     table["age"] = table["age"].round().astype(int)
     table["type"] = table["prospect"].map({True: "Prospect", False: "NHL"})
+    if "status" not in table:                        # a forecast table from before notebook 22
+        table["status"], table["team_today"], table["team_2025_26"] = None, table["team"], table["team"]
+    table["team"] = table["team"].fillna(NO_ORG)     # opening-night team; blank = not with an NHL organization
     return table
 
 
@@ -83,10 +89,13 @@ def show_player(r):
         st.caption(f"Prospect: the rating means **if he played NHL minutes this season** ({SEASON}).")
     st.html(badge_html(r))
 
-    team_label = "Team (draft team)" if r["prospect"] else "Team"
+    team_line = f"**Team on opening night:** {r['team']}"
+    if pd.notna(r["team_today"]) and r["team_today"] != r["team"]:
+        team_line += f" (today: {r['team_today']})"
     lines = [
         f"**Position:** {GROUP_NAMES[r['group']]} ({r['position']})",
-        f"**{team_label}:** {r['team']}",
+        team_line,
+        f"**Status:** {r['status'] if pd.notna(r['status']) else '-'}",
         f"**Age:** {r['age']}",
         f"**Projected WAR/60:** {num(r['proj_war_60'])}",
     ]
@@ -101,6 +110,8 @@ def show_player(r):
     if r["prospect"]:
         st.markdown("**Prospect details**")
         draft = f"{int(r['draft_year'])}, round {int(r['round'])}, pick {int(r['pick'])} overall, by {r['draft_team']}"
+        if r["draft_team"] != r["team"]:
+            draft += f" (now {r['team']})"
         p_lines = [f"**Drafted:** {draft}"]
         if pd.notna(r["league_2025_26"]):
             stats = f"{r['league_2025_26']}, {num(r['gp_2025_26'], '{:.0f}')} GP"
@@ -129,6 +140,8 @@ TABLE_COLUMNS = {
     "position": st.column_config.TextColumn("Pos"),
     "age": st.column_config.NumberColumn("Age", format="%d"),
     "type": st.column_config.TextColumn("NHL / prospect"),
+    "status": st.column_config.TextColumn("Status (opening night)"),
+    "team_2025_26": st.column_config.TextColumn("2025-26 team"),
     "ovr": st.column_config.NumberColumn("OVR", format="%d"),
     "war_std": st.column_config.NumberColumn("WAR (full-time)", format="%.2f",
                                              help="WAR per full-time season; compares across positions"),
@@ -177,6 +190,9 @@ with st.expander("How to read this"):
 - **Defenseman prospects** are ranked by a ranking prior (`d_rank_prior`); their projected WAR/60 is the
   position average, the same for all of them.
 - **Prospect ratings mean "if he plays"** NHL minutes this season. Whether he gets them isn't part of the rating.
+- **Teams are opening-night teams** in a "no disputes, full health" world: a suspended, holding-out or unsigned
+  player belongs to the team that holds him, and in-season trades are undone. **Status** says what he is on that
+  team (NHL roster, off the active roster, AHL, unsigned draft rights, ...).
 """
     )
 
@@ -217,16 +233,19 @@ with board_tab:
                height=560)
 
 with team_tab:
-    nhl_teams = sorted(table.loc[~table["prospect"], "team"].unique())
+    nhl_teams = sorted(t for t in table["team"].unique() if t not in (NO_ORG, "ARI"))
     team = st.selectbox("Team", nhl_teams, index=nhl_teams.index(DEFAULT_TEAM), key="team_pick")
+    org = table[table["team"] == team].sort_values(["ovr", "war_std"], ascending=False)
 
-    roster = table[~table["prospect"] & (table["team"] == team)].sort_values(["ovr", "war_std"], ascending=False)
-    st.markdown(f"**NHL roster** ({len(roster)})")
-    st.caption("Each player's last team in our data, including players who didn't play in 2025-26.")
-    show_table(roster, ["name", "position", "age", "ovr", "war_std", "proj_war_60", "war_2025_minutes", "minutes_2025_26"])
+    roster = org[org["status"].isin(NHL_LEVEL)]
+    st.markdown(f"**NHL roster on opening night** ({len(roster)})")
+    st.caption("Disputes included (suspended, holding out, unsigned RFA), and players off the active roster "
+               "(injured or not yet signed). In-season trades are undone.")
+    show_table(roster, ["name", "position", "age", "status", "ovr", "war_std", "proj_war_60", "war_2025_minutes", "team_2025_26"])
 
-    prospects = table[table["prospect"] & (table["team"] == team)].sort_values(["ovr", "war_std"], ascending=False)
-    st.markdown(f"**Prospects** ({len(prospects)})")
-    st.caption("Team = the team that drafted him. Ratings mean \"if he played NHL minutes this season\".")
-    show_table(prospects, ["name", "position", "age", "ovr", "war_std", "draft_year", "pick", "league_2025_26",
-                           "gp_2025_26", "points_2025_26"])
+    system = org[~org["status"].isin(NHL_LEVEL)]
+    st.markdown(f"**In the system** ({len(system)})")
+    st.caption("AHL/ECHL players and draft rights (junior, college, Europe). Ratings for prospects mean "
+               "\"if he played NHL minutes this season\".")
+    show_table(system, ["name", "position", "age", "status", "ovr", "war_std", "draft_year", "pick", "league_2025_26",
+                        "gp_2025_26", "points_2025_26"])

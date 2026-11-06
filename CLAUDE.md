@@ -17,7 +17,12 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
     gitignored), so it's local only; without the file it shows a message and stops. HOCKEY_FORECAST_TABLE
     overrides the path.
 - forecast.current_projections(): the 2026-27 projection for every player (nb18 skaters, nb21 goalies and
-  goalie prospects, nb19 skater prospects). ratings.py: OVR scale, skater and goalie anchors, LOCKED.
+  goalie prospects, nb19 skater prospects, nb22 new players). ratings.py: OVR scale, skater and goalie
+  anchors, LOCKED.
+- Notebook 22: 2026-27 opening-night teams and statuses (data/rosters_2026-27.csv) from an NHL API snapshot in
+  data/current_raw/ (gitignored). Hand-kept, never overwritten: data/trades_2026-27.csv (in-season trades; the
+  baseline undoes them, the simulator applies them) and data/roster_overrides.csv (overrides win).
+  Notebook 20 must run after 22. The 2026-27 schedule has 84 games.
 - app_data/cards.csv: slim public card table (committed), one row per player per season, written
   by notebook 10 via player_card.export_app_table(by_season=True). Only columns the card draws;
   no raw MoneyPuck situation stats. (Notebook 09 wrote the earlier 2025-26-only version.)

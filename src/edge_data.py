@@ -229,3 +229,278 @@ def build_draft_table(raw_dir):
             "playerId": "playerId", "playerName": "name", "position": "position", "group": "group",
             "birthDate": "birth_date", "amateurLeague": "amateur_league", "amateurClubName": "amateur_club"}
     return d[list(cols)].rename(columns=cols).sort_values(["draft_year", "pick"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# 2026-27 rosters (notebook 22): today's active rosters, fresh profiles, game logs, the schedule
+# ---------------------------------------------------------------------------
+ROSTER_URL = "https://api-web.nhle.com/v1/roster/{team}/current"           # redirects to the current season
+GAME_LOG_URL = "https://api-web.nhle.com/v1/player/{player_id}/game-log/{season}/2"
+SCHEDULE_URL = "https://api-web.nhle.com/v1/schedule/{date}"
+
+
+def _stamp(data):
+    """Add the download time to a response, so every saved file says when it was true."""
+    data = dict(data)
+    data["_downloaded"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+    return data
+
+
+def download_rosters(teams, raw_dir, pause=0.5):
+    """Today's active roster for each team (raw_dir/<TEAM>.json). Teams already saved are skipped.
+    The active roster leaves out injured, suspended and AHL-assigned players."""
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    failed = []
+    for team in teams:
+        path = raw_dir / f"{team}.json"
+        if path.exists():
+            continue
+        data = fetch_url(ROSTER_URL.format(team=team), f"roster {team}")
+        if not data:
+            failed.append(team)
+        else:
+            path.write_text(json.dumps(_stamp(data)))
+        time.sleep(pause)
+    print(f"Rosters saved: {len(list(raw_dir.glob('*.json')))}" + (f"; failed (run again): {failed}" if failed else ""))
+    return failed
+
+
+def download_current_profiles(player_ids, raw_dir, pause=0.3):
+    """Fresh NHL profiles (same landing page as bio_raw), stamped with the download time. Resumable."""
+    def fetch(pid):
+        data = fetch_bio(pid)
+        return None if data is None else _stamp(data)      # None = failed, retried on the next run
+    return _download(player_ids, fetch, raw_dir, pause)
+
+
+def download_game_logs(player_ids, season, raw_dir, pause=0.3):
+    """Each player's game log for one regular season (season like "20262027"). Resumable."""
+    return _download(player_ids, lambda pid: fetch_url(GAME_LOG_URL.format(player_id=pid, season=season), pid),
+                     raw_dir, pause)
+
+
+def download_schedule(date, path):
+    """The league schedule for the week starting `date` (it carries regularSeasonStartDate). Skipped if saved."""
+    path = Path(path)
+    if not path.exists():
+        data = fetch_url(SCHEDULE_URL.format(date=date), "schedule")
+        if data:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(_stamp(data)))
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+MINOR_LEAGUES = {"AHL", "ECHL"}                     # NHL teams' farm leagues
+EUROPE_LEAGUES = {"KHL", "VHL", "MHL", "SHL", "Liiga", "NL", "DEL", "HockeyAllsvenskan", "Czechia", "ICEHL", "Mestis",
+                  "SL", "Slovakia", "J20 Nationell", "U20 Nationell", "U20 SM-liiga", "U20 SM-sarja", "Czechia2", "DEL2",
+                  "Norway", "Denmark", "EIHL", "Ligue Magnus", "Czech U20", "Slovakia U20"}
+
+
+RELOCATED = {"ARI": "UTA"}                          # draft rights of a relocated team moved with it
+
+
+def _fix_text(text):
+    """Some club names come back from the API double-encoded ('MalmÃ¶' for 'Malmö'); undo that when it applies."""
+    if not isinstance(text, str):
+        return text
+    for codec in ("cp1252", "latin-1"):              # the two ways the bytes get misread
+        try:
+            return text.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+    return text
+
+
+def build_current_tables(players_dir, rosters_dir, season=2026):
+    """
+    Read notebook 22's snapshot. Returns three tables:
+    - players: one row per profile (team on his profile, active flag, draft details, career NHL games, download time)
+    - rows: his seasonTotals rows for `season` (regular season, every league, in the profile's order)
+    - rosters: who is on each team's active roster today, and when that was downloaded
+    """
+    players, rows = [], []
+    for f in sorted(Path(players_dir).glob("*.json")):
+        d = json.loads(f.read_text())
+        if not d.get("playerId"):
+            continue
+        draft = d.get("draftDetails") or {}
+        career = ((d.get("careerTotals") or {}).get("regularSeason") or {})
+        players.append({
+            "playerId": d["playerId"], "name": f"{d['firstName']['default']} {d['lastName']['default']}",
+            "position": d.get("position"), "birth_date": d.get("birthDate"), "is_active": bool(d.get("isActive")),
+            "profile_team": d.get("currentTeamAbbrev"), "profile_team_name": (d.get("fullTeamName") or {}).get("default"),
+            "draft_year": draft.get("year"), "draft_team": draft.get("teamAbbrev"), "draft_pick": draft.get("overallPick"),
+            "nhl_gp_career": career.get("gamesPlayed", 0) or 0, "profile_as_of": d.get("_downloaded")})
+        for i, s in enumerate(d.get("seasonTotals", [])):
+            if s.get("season") == season * 10001 + 1 and s.get("gameTypeId") == 2:      # 2026 -> 20262027
+                rows.append({"playerId": d["playerId"], "order": i, "league": s.get("leagueAbbrev"),
+                             "club": _fix_text((s.get("teamName") or {}).get("default")), "gp": s.get("gamesPlayed") or 0})
+    rosters = []
+    for f in sorted(Path(rosters_dir).glob("*.json")):
+        d = json.loads(f.read_text())
+        for k in ["forwards", "defensemen", "goalies"]:
+            rosters += [{"playerId": p["id"], "roster_team": f.stem, "roster_as_of": d.get("_downloaded")} for p in d.get(k, [])]
+    return pd.DataFrame(players), pd.DataFrame(rows), pd.DataFrame(rosters)
+
+
+def nhl_team_names(players):
+    """Full NHL team name -> abbreviation, read from the profiles themselves (e.g. 'Detroit Red Wings' -> 'DET')."""
+    p = players.dropna(subset=["profile_team", "profile_team_name"])
+    return p.groupby("profile_team_name")["profile_team"].agg(lambda x: x.mode().iloc[0]).to_dict()
+
+
+def affiliate_table(players, rows, min_players=3, min_share=0.6):
+    """
+    Each AHL/ECHL club's NHL parent, from the data: the most common NHL team on the profiles of its 2026-27
+    players who have one (players on NHL contracts). A club needs min_players such players and a min_share
+    majority; otherwise its parent is unknown (fill it in by hand if needed).
+    """
+    r = rows[rows["league"].isin(MINOR_LEAGUES)].merge(players[["playerId", "profile_team"]], on="playerId")
+    out = []
+    for (league, club), d in r.groupby(["league", "club"]):
+        signed = d.dropna(subset=["profile_team"]).drop_duplicates("playerId")
+        counts = signed["profile_team"].value_counts()
+        top = counts.index[0] if len(counts) else None
+        share = counts.iloc[0] / counts.sum() if len(counts) else 0.0
+        ok = len(signed) >= min_players and share >= min_share
+        out.append({"league": league, "club": club, "players": d["playerId"].nunique(), "nhl_signed": len(signed),
+                    "top_parent": top, "share": share, "parent": top if ok else None,
+                    "other_parents": ", ".join(f"{t} {n}" for t, n in counts.iloc[1:].items())})
+    return pd.DataFrame(out).sort_values(["league", "club"]).reset_index(drop=True)
+
+
+def cba_rights(draft_year, league, season=2026):
+    """
+    Are a draftee's unsigned rights plausibly still held in `season` (2026 = 2026-27), by the league he plays in?
+    From memory of CBA Article 8.6 (2012 CBA, extended by the 2020 and 2025 MOUs); approximate, so used as a
+    check only:
+    - college (NCAA): held while he's in college (up to August 15 after his class graduates)
+    - Europe (incl. KHL and European juniors): four years, until June 1 of draft year + 4
+    - anything else (CHL, USHL, other junior): two years, until June 1 of draft year + 2
+    Returns (held, rule text).
+    """
+    if pd.isna(draft_year):
+        return False, "undrafted"
+    y = int(draft_year)
+    if league == "NCAA":
+        return True, "college: held while in the NCAA"
+    if league in EUROPE_LEAGUES:
+        return y + 4 > season, f"Europe: until June 1, {y + 4}"
+    return y + 2 > season, f"junior/other: until June 1, {y + 2}"
+
+
+def assign_teams(players, rows, rosters, affiliates, team_names, trades, overrides, opening_night, first_nhl_team):
+    """
+    Opening-night team and status for every player (notebook 22's rules, in order).
+
+    team_today: on an active roster today -> that team; else the team on his profile (the NHL's record of who
+    holds him, signed or not); else his 2026-27 AHL/ECHL club's NHL parent; else none.
+    team_opening_night: team_today, then
+      (rule 2) a player whose first 2026-27 NHL game was for another team starts there (first_nhl_team),
+      (trade log) a logged move dated after opening night is undone (he starts on from_team),
+      (overrides) roster_overrides.csv wins.
+    status: what kind of member of the organization he is (see the notebook for the list).
+    Returns the table plus the trade-log check.
+    """
+    p = players.merge(rosters, on="playerId", how="left")
+    last = rows.sort_values("order").groupby("playerId").tail(1).set_index("playerId")       # latest club this season
+    minor = rows[rows["league"].isin(MINOR_LEAGUES)].sort_values("order").groupby("playerId").tail(1).set_index("playerId")
+    has_nhl26 = set(rows.loc[rows["league"] == "NHL", "playerId"])
+    parent = affiliates.set_index(["league", "club"])["parent"]
+
+    p["league_now"] = p["playerId"].map(last["league"])
+    p["club_now"] = p["playerId"].map(last["club"])
+    p["minor_parent"] = [parent.get((l, c)) if isinstance(l, str) else None
+                         for l, c in zip(p["playerId"].map(minor["league"]), p["playerId"].map(minor["club"]))]
+
+    # team today
+    p["team_today"], p["rule"] = None, None
+    on_roster = p["roster_team"].notna()
+    p.loc[on_roster, "team_today"] = p.loc[on_roster, "roster_team"]
+    p.loc[on_roster, "rule"] = "active roster today"
+    has_prof = ~on_roster & p["profile_team"].notna()
+    p.loc[has_prof, "team_today"] = p.loc[has_prof, "profile_team"]
+    p.loc[has_prof, "rule"] = "team on his NHL profile"
+    via_minor = ~on_roster & ~has_prof & p["minor_parent"].notna()
+    p.loc[via_minor, "team_today"] = p.loc[via_minor, "minor_parent"]
+    p.loc[via_minor, "rule"] = "AHL/ECHL club's NHL parent"
+
+    # status
+    in_minor_now = p["league_now"].isin(MINOR_LEAGUES)
+    nhl_vet = (p["nhl_gp_career"] > 0) | p["playerId"].isin(has_nhl26)
+    st = np.select(
+        [on_roster,
+         has_prof & in_minor_now,
+         has_prof & p["league_now"].notna() & ~p["league_now"].isin(MINOR_LEAGUES | {"NHL"}),
+         has_prof & nhl_vet,
+         has_prof,
+         via_minor],
+        ["NHL roster",
+         "AHL/ECHL (NHL contract)",
+         "rights held, playing elsewhere",
+         "NHL org, off active roster",
+         "rights held, no 2026-27 games yet",
+         "AHL/ECHL (AHL contract)"],
+        default="")
+    p["status"] = st
+
+    # Nobody claims him: CBA check for unsigned draftees (never played in the NHL), otherwise not with an NHL organization
+    rest = (p["status"] == "") & (p["nhl_gp_career"] == 0)
+    cba = [cba_rights(y, l) for y, l in zip(p["draft_year"], p["league_now"])]
+    p["cba_held"] = [c[0] for c in cba]
+    p["cba_rule"] = [c[1] for c in cba]
+    held = rest & p["cba_held"] & p["league_now"].notna()
+    p.loc[held, "team_today"] = p.loc[held, "draft_team"].replace(RELOCATED)
+    p.loc[held, "status"] = "rights held, profile blank (CBA)"
+    p.loc[held, "rule"] = "draft team, CBA rights still held (profile blank)"
+    expired = rest & ~held & p["draft_year"].notna() & p["league_now"].notna()          # (rest: never played in the NHL)
+    p.loc[expired, "status"] = "rights likely expired"
+    p.loc[expired, "rule"] = "CBA rights expired (profile blank)"
+    none = p["status"] == ""
+    p.loc[none, "status"] = "not with an NHL organization"
+    p.loc[none, "rule"] = np.where(p.loc[none, "league_now"].notna(), "no NHL team, playing elsewhere", "no 2026-27 games, no NHL team")
+
+    # Opening night: undo in-season moves with games, then logged trades, then overrides
+    p["team_opening_night"] = p["team_today"]
+    moved = p["playerId"].map(first_nhl_team)
+    rule2 = moved.notna() & (moved != p["team_today"])
+    p.loc[rule2, "team_opening_night"] = moved[rule2]
+    p.loc[rule2, "rule"] = "first 2026-27 NHL team (in-season move)"
+
+    checks = []
+    for _, t in trades.iterrows():
+        i = p.index[p["playerId"] == t["playerId"]]
+        today = p.loc[i, "team_today"].iloc[0] if len(i) else None
+        checks.append({"trade_id": t["trade_id"], "name": t["name"], "from_team": t["from_team"], "to_team": t["to_team"],
+                       "team_today": today, "matches": today == t["to_team"]})
+        if len(i) and pd.Timestamp(t["date"]) > pd.Timestamp(opening_night):
+            p.loc[i, "team_opening_night"] = t["from_team"]
+            p.loc[i, "rule"] = f"trade log {t['trade_id']} undone ({t['date']})"
+
+    for _, o in overrides.iterrows():
+        i = p.index[p["playerId"] == o["playerId"]]
+        if pd.notna(o.get("team")):
+            p.loc[i, "team_opening_night"] = o["team"]
+        if pd.notna(o.get("status")):
+            p.loc[i, "status"] = o["status"]
+        p.loc[i, "rule"] = "override: " + str(o.get("note", ""))
+    return p, pd.DataFrame(checks)
+
+
+def first_nhl_teams(game_log_dir, season_start=None):
+    """Each player's team in his first 2026-27 NHL regular-season game, with the date of his first game for
+    each later team (from the saved game logs)."""
+    first, moves = {}, []
+    for f in sorted(Path(game_log_dir).glob("*.json")):
+        games = sorted(json.loads(f.read_text()).get("gameLog", []), key=lambda g: g["gameDate"])
+        if not games:
+            continue
+        pid = int(f.stem)
+        first[pid] = games[0]["teamAbbrev"]
+        seen = [games[0]["teamAbbrev"]]
+        for g in games[1:]:
+            if g["teamAbbrev"] != seen[-1]:
+                moves.append({"playerId": pid, "from_team": seen[-1], "to_team": g["teamAbbrev"], "first_game": g["gameDate"]})
+                seen.append(g["teamAbbrev"])
+    return pd.Series(first, dtype=object), pd.DataFrame(moves, columns=["playerId", "from_team", "to_team", "first_game"])

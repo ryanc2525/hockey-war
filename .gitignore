@@ -27,3 +27,6 @@ __pycache__/
 
 # Claude Code local settings
 .claude/
+
+# NHL rosters and fresh profiles for 2026-27 (notebook 22; a snapshot, rebuildable)
+data/current_raw/
