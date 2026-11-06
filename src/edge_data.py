@@ -291,7 +291,29 @@ def download_schedule(date, path):
     return json.loads(path.read_text()) if path.exists() else None
 
 
-MINOR_LEAGUES = {"AHL", "ECHL"}                     # NHL teams' farm leagues
+STANDINGS_URL = "https://api-web.nhle.com/v1/standings/{date}"
+
+
+def download_standings(date, path):
+    """The league standings as of `date` (YYYY-MM-DD): games played, points, points percentage per team.
+    Skipped if already saved, so the NHL is called once per date."""
+    path = Path(path)
+    if not path.exists():
+        data = fetch_url(STANDINGS_URL.format(date=date), "standings")
+        if data:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(_stamp(data)))
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def standings_table(data):
+    """One row per team from a saved standings file: team, games_played, points, point_pct."""
+    rows = [{"team": t["teamAbbrev"]["default"], "games_played": t["gamesPlayed"], "points": t["points"],
+             "point_pct": t["pointPctg"]} for t in data.get("standings", [])]
+    return pd.DataFrame(rows)
+
+
+MINOR_LEAGUES ={"AHL", "ECHL"}                     # NHL teams' farm leagues
 EUROPE_LEAGUES = {"KHL", "VHL", "MHL", "SHL", "Liiga", "NL", "DEL", "HockeyAllsvenskan", "Czechia", "ICEHL", "Mestis",
                   "SL", "Slovakia", "J20 Nationell", "U20 Nationell", "U20 SM-liiga", "U20 SM-sarja", "Czechia2", "DEL2",
                   "Norway", "Denmark", "EIHL", "Ligue Magnus", "Czech U20", "Slovakia U20"}

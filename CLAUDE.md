@@ -23,6 +23,11 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   data/current_raw/ (gitignored). Hand-kept, never overwritten: data/trades_2026-27.csv (in-season trades; the
   baseline undoes them, the simulator applies them) and data/roster_overrides.csv (overrides win).
   Notebook 20 must run after 22. The 2026-27 schedule has 84 games.
+- src/lineups.py + notebook 23 (simulator step 1): who dresses (12 F with 4 natural centers, 6 D, 2 G) and
+  minutes by slot. Coach score = w x usage + (1 - w) x projection; the backtest picked w, the rookie rule and
+  the usage lookback per group (settings live in the notebook). Writes data/lineups_2026-27.csv (baseline: no
+  trades applied, disputes play) and adds the in-season trades T2-T6 to data/trades_2026-27.csv if missing.
+  Notebook 23 runs after 22 and reads data/current_raw/standings_2026-11-06.json (context only).
 - app_data/cards.csv: slim public card table (committed), one row per player per season, written
   by notebook 10 via player_card.export_app_table(by_season=True). Only columns the card draws;
   no raw MoneyPuck situation stats. (Notebook 09 wrote the earlier 2025-26-only version.)
