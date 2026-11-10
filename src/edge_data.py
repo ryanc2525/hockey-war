@@ -313,6 +313,57 @@ def standings_table(data):
     return pd.DataFrame(rows)
 
 
+CLUB_SCHEDULE_URL = "https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
+MP_TO_NHL = {"L.A": "LAK", "N.J": "NJD", "S.J": "SJS", "T.B": "TBL"}     # MoneyPuck's old codes -> NHL's
+
+
+def nhl_code(team, season):
+    """The NHL API's code for a MoneyPuck team code in a season (Phoenix was PHX through 2013-14)."""
+    team = MP_TO_NHL.get(team, team)
+    return "PHX" if team == "ARI" and season <= 2013 else team
+
+
+def download_club_schedules(team_seasons, raw_dir, pause=0.3):
+    """
+    Every game (with final score) of each (team, season) in team_seasons, one file per team-season:
+    raw_dir/{season}_{TEAM}.json. season = start year. Files already saved are skipped, so it can be resumed.
+    """
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    todo = [(t, s) for t, s in team_seasons if not (raw_dir / f"{s}_{t}.json").exists()]
+    print(f"{len(team_seasons) - len(todo)} already saved, {len(todo)} to download "
+          f"(about {len(todo) * (pause + 0.3) / 60:.0f} minutes)")
+    failed = []
+    for i, (team, season) in enumerate(todo, 1):
+        data = fetch_url(CLUB_SCHEDULE_URL.format(team=team, season=f"{season}{season + 1}"), f"{team} {season}")
+        if data:
+            (raw_dir / f"{season}_{team}.json").write_text(json.dumps(_stamp(data)))
+        else:
+            failed.append((team, season))
+        if i % 50 == 0 or i == len(todo):
+            print(f"  {i} / {len(todo)}")
+        time.sleep(pause)
+    print(f"{len(failed)} failed (run again to retry): {failed[:10]}" if failed else "Done, no failures.")
+    return failed
+
+
+def schedule_games(raw_dir):
+    """
+    Regular-season games from the saved club schedules, one row per game (each game is in both teams' files):
+    game_id, season (start year), date, home, away, home_goals, away_goals, last_period (REG, OT or SO).
+    """
+    rows = {}
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        for g in json.loads(f.read_text()).get("games", []):
+            if g.get("gameType") != 2 or g.get("gameState") not in ("OFF", "FINAL"):
+                continue
+            rows[g["id"]] = {"game_id": g["id"], "season": int(str(g["season"])[:4]), "date": g["gameDate"],
+                             "home": g["homeTeam"]["abbrev"], "away": g["awayTeam"]["abbrev"],
+                             "home_goals": g["homeTeam"]["score"], "away_goals": g["awayTeam"]["score"],
+                             "last_period": (g.get("gameOutcome") or {}).get("lastPeriodType")}
+    return pd.DataFrame(rows.values()).sort_values(["season", "date", "game_id"]).reset_index(drop=True)
+
+
 MINOR_LEAGUES ={"AHL", "ECHL"}                     # NHL teams' farm leagues
 EUROPE_LEAGUES = {"KHL", "VHL", "MHL", "SHL", "Liiga", "NL", "DEL", "HockeyAllsvenskan", "Czechia", "ICEHL", "Mestis",
                   "SL", "Slovakia", "J20 Nationell", "U20 Nationell", "U20 SM-liiga", "U20 SM-sarja", "Czechia2", "DEL2",

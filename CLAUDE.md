@@ -28,6 +28,18 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   the usage lookback per group (settings live in the notebook). Writes data/lineups_2026-27.csv (baseline: no
   trades applied, disputes play) and adds the in-season trades T2-T6 to data/trades_2026-27.csv if missing.
   Notebook 23 runs after 22 and reads data/current_raw/standings_2026-11-06.json (context only).
+- src/simulate.py + notebook 24 (simulator step 2): game model (Poisson "normal" goals + a late pulled-goalie
+  table + OT/SO tilt), vectorized notebook 17 draws (pools centered), seeded season engine. Backtest vs. real
+  standings: alone it does NOT beat "last season pulled 1/3 to average"; a 40/60 blend with it does. lineups.py
+  options (defaults = notebook 23): pick_lineup(tiered=True) for call-up tiers, assign_minutes(own_weight=...)
+  for blended minutes. Past results: data/schedule_raw/ (NHL API club schedules 2008-09 to 2020-21, gitignored);
+  2021-22 on from the shot data.
+- Notebook 25 (simulator step 3a): coefficient fits {all seasons, 2011-12 on, recency half-life 4} x team
+  ingredient {none, level blend 40/60, residual = last season's real minus simulated points, shrunk 0.4}, every
+  season scored on fits from earlier seasons only. STEP 3 DEFAULT (Ryan's choice): all seasons + residual
+  (lambda 0.4). The level blend scored slightly better (13.02 vs. 13.23 test, within noise) but keeps only 40% of
+  a roster move; the residual keeps it all. simulate.py options (defaults = notebook 24): fit_game_model(weights=...),
+  simulate_season(bonus={team: normal goals per game}).
 - app_data/cards.csv: slim public card table (committed), one row per player per season, written
   by notebook 10 via player_card.export_app_table(by_season=True). Only columns the card draws;
   no raw MoneyPuck situation stats. (Notebook 09 wrote the earlier 2025-26-only version.)

@@ -39,6 +39,7 @@ USAGE_FIRST = "usage first"  # the setting "real usage first, rating breaks ties
 POOL_STATUSES = ["NHL roster", "NHL org, off active roster", "suspended / holdout", "unsigned RFA",
                  "AHL/ECHL (NHL contract)"]
 DISPUTE_STATUSES = ["suspended / holdout", "unsigned RFA"]
+AHL_STATUSES = ["AHL/ECHL (NHL contract)"]          # tier 2 when call-ups are tiered (notebook 24)
 
 
 def season_games(season):
@@ -175,15 +176,20 @@ def coach_scores(pool, settings, defaults):
     return p
 
 
-def _order(d):
-    """Best first: coach score, projection, d_rank_prior, then playerId (so the order is always the same)."""
+def _order(d, tiered=False):
+    """Best first: coach score, projection, d_rank_prior, then playerId (so the order is always the same).
+    tiered=True: the NHL level (tier 1) comes before AHL/ECHL players on NHL contracts (tier 2), then the same order."""
+    if tiered:
+        tier = np.where(d["status"].isin(AHL_STATUSES), 2, 1) if "status" in d else np.ones(len(d))
+        return (d.assign(_tier=tier).sort_values(["_tier", "key1", "key2", "key3", "playerId"],
+                                                 ascending=[True, False, False, False, True]).drop(columns="_tier"))
     return d.sort_values(["key1", "key2", "key3", "playerId"], ascending=[False, False, False, True])
 
 
 # ---------------------------------------------------------------------------
 # 4. Picking a lineup
 # ---------------------------------------------------------------------------
-def pick_lineup(team_pool):
+def pick_lineup(team_pool, tiered=False):
     """
     One team's lineup from its pool (already scored). Returns every pool player with:
       dressed (bool), rank (1 = best in his group; dressed players first, then extras),
@@ -191,10 +197,13 @@ def pick_lineup(team_pool):
       flag (text, empty if nothing unusual).
     Forwards: the top 12; if fewer than 4 are natural centers, the best center outside the 12 replaces the
     lowest-ranked winger, as often as needed. If no center is left, a winger plays center (flagged).
+    tiered=True (call-ups only when needed, notebook 24): the NHL level fills the slots first; AHL/ECHL players on
+    NHL contracts dress only for slots the NHL level can't fill (a missing 4th center included). Once dressed,
+    players are ranked (and get minutes) by coach score alone. Default False = notebook 23's rule.
     """
     parts = []
     for g in ["F", "D", "G"]:
-        d = _order(team_pool[team_pool["group"] == g]).copy()
+        d = _order(team_pool[team_pool["group"] == g], tiered).copy()
         d["flag"] = ""
         n = N_DRESSED[g]
         dressed = list(d.index[:n])
@@ -210,7 +219,7 @@ def pick_lineup(team_pool):
                 d.at[in_i, "flag"] = f"center rule: dressed over {d.at[out_i, 'name']}"
                 d.at[out_i, "flag"] = f"center rule: sits for {d.at[in_i, 'name']}"
         d["dressed"] = d.index.isin(dressed)
-        d = pd.concat([_order(d[d["dressed"]]), _order(d[~d["dressed"]])])
+        d = pd.concat([_order(d[d["dressed"]]), _order(d[~d["dressed"]], tiered)])
         d["rank"] = np.arange(1, len(d) + 1)
         d["slot"] = np.where(d["dressed"], g + d["rank"].astype(str), "extra")
         d["line"], d["role"] = np.nan, g if g != "F" else "W"
@@ -287,19 +296,34 @@ def starter_share(usage, seasons):
     return shares, float(shares.median())
 
 
-def assign_minutes(lineup, slots, share, col="scaled", extras=False):
+def assign_minutes(lineup, slots, share, col="scaled", extras=False, own_weight=0.0):
     """
     minutes_per_game for every player in a lineup table (from pick_lineup):
     skaters by their rank in the slot table's column `col` ("scaled" for 2026-27, "raw" in the backtest);
     goalies 60 x share (starter) or 60 x (1 - share) (backup).
     extras=False: players who don't dress play 0. extras=True (backtest): they get the minutes for their rank
     too (ranks past the table get its last value).
+    own_weight (notebook 24; a number, or {"F": ..., "D": ...}): blend the slot with each skater's own recent ice
+    time per game, (1 - own_weight) x slot + own_weight x own (players without their own usage keep the slot). Then each team's
+    dressed forwards and defensemen are rescaled so they still add up to the slots' total. 0 = notebook 23.
     """
     out = pd.Series(0.0, index=lineup.index)
     for g in ["F", "D"]:
         m = (lineup["group"] == g) & (lineup["dressed"] | extras)
         tab = slots.loc[g][col].dropna()                      # minutes by rank
         out[m] = lineup.loc[m, "rank"].clip(upper=tab.index.max()).map(tab).to_numpy()
+    weights = own_weight if isinstance(own_weight, dict) else {"F": own_weight, "D": own_weight}
+    if any(weights.values()):
+        sk = (lineup["group"] != "G") & (out > 0)
+        own = lineup["toi_input"].where(lineup["toi_rule"] == "own", out)
+        wt = lineup["group"].map(weights).fillna(0.0)
+        blend = (1 - wt) * out + wt * own
+        keys = [c for c in ["season", "team"] if c in lineup] + ["group"]
+        dr = sk & lineup["dressed"]
+        slot_sum = out[dr].groupby([lineup.loc[dr, k] for k in keys]).transform("sum")
+        blend_sum = blend[dr].groupby([lineup.loc[dr, k] for k in keys]).transform("sum")
+        out[sk] = blend[sk]
+        out[dr] = blend[dr] * slot_sum / blend_sum
     gm = lineup["group"] == "G"
     out[gm & (lineup["rank"] == 1)] = 60 * share
     out[gm & (lineup["rank"] == 2)] = 60 * (1 - share)
@@ -352,20 +376,22 @@ def team_pool(players, team, sit_out=()):
     return players[(players["team"] == team) & players["in_pool"] & ~players["playerId"].isin(list(sit_out))]
 
 
-def build_lineups(scored, slots, share, trades=None, trade_ids=(), sit_out=()):
+def build_lineups(scored, slots, share, trades=None, trade_ids=(), sit_out=(), tiered=False, own_weight=0.0):
     """
     All 32 lineups from scored players (coach_scores already applied to the whole league pool, so scores don't
     move when a trade or a sit-out changes a team). Returns one row per pool player with minutes and WAR.
+    tiered, own_weight: notebook 24's call-up tiers and minutes blend (see pick_lineup, assign_minutes);
+    the defaults are notebook 23's rules.
     """
     p = scored if not len(trade_ids) else apply_trades(scored, trades, list(trade_ids))
     teams = sorted(p.loc[p["in_pool"], "team"].dropna().unique())
     out = []
     for team in teams:
-        lu = pick_lineup(team_pool(p, team, sit_out))
+        lu = pick_lineup(team_pool(p, team, sit_out), tiered)
         lu["team"] = team
         out.append(lu)
     out = pd.concat(out)
-    out["minutes_per_game"] = assign_minutes(out, slots, share)
+    out["minutes_per_game"] = assign_minutes(out, slots, share, own_weight=own_weight)
     out["war_per_game"] = out["proj_war_60"] * out["minutes_per_game"] / 60
     out["war_per_84"] = out["war_per_game"] * SEASON_GAMES_2026
     return out.reset_index(drop=True)

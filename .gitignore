@@ -30,3 +30,6 @@ __pycache__/
 
 # NHL rosters and fresh profiles for 2026-27 (notebook 22; a snapshot, rebuildable)
 data/current_raw/
+
+# Past NHL schedules and results (notebook 24; rebuildable)
+data/schedule_raw/
