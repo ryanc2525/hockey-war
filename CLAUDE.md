@@ -9,13 +9,14 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
 - data/cards_<label>.csv: full card table per season (gitignored). data/cards_2025-26.csv is the
   fixed reference for notebook 10's regression check; never overwrite it.
 - notebooks/01–10: how it was built, step by step
-- app.py: Streamlit app, three pages (st.navigation; st.set_page_config only here). Never recomputes WAR
+- app.py: Streamlit app, two pages (st.navigation; st.set_page_config only here). Never recomputes WAR
   or calls an NHL API.
   - app_pages/almanac.py (default page): search a player, pick a season, see his card. Reads app_data/ only
     (2021-22 to 2025-26).
-  - app_pages/forecast.py: 2026-27 OVR and projections. Reads data/forecast_table_2026-27.csv (notebook 20,
-    gitignored), so it's local only; without the file it shows a message and stops. HOCKEY_FORECAST_TABLE
-    overrides the path.
+  - app_pages/forecast.py: tabs Players (OVR view + leaderboard), Teams, Simulator. Reads
+    data/forecast_table_2026-27.csv (notebook 20, gitignored), so it's local only; without the file it shows a
+    message and stops. HOCKEY_FORECAST_TABLE overrides the path. The Simulator tab is app_pages/simulator.py
+    (a module now, not a page: show_simulator()).
 - forecast.current_projections(): the 2026-27 projection for every player (nb18 skaters, nb21 goalies and
   goalie prospects, nb19 skater prospects, nb22 new players). ratings.py: OVR scale, skater and goalie
   anchors, LOCKED.
@@ -49,9 +50,20 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   data/simulator_2026-27/ (players.csv, schedule.csv, settings.json; gitignored). 2026-27 schedules live in
   data/schedule_raw/2026-27/ (a subfolder, so notebooks 24-25's schedule_games glob doesn't see them);
   REFRESH = True in notebook 26 re-downloads them (33 NHL calls). "Today" = the schedule files' download stamp.
-- app_pages/simulator.py: third app page (local only, like Forecast): reads the bundle + data/trades_2026-27.csv,
-  imports season.py only after the files check (the live site has no scipy). HOCKEY_SIMULATOR_DIR overrides the
-  bundle path.
+- src/scoring.py + notebook 27 (stat lines): goals/60 and assists/60 projected like notebook 15 (3 seasons,
+  age on, 500 regression minutes, via forecast.project on a rate table with gar = count); rookies/prospects:
+  NHLe x 60 / rookie minutes, shrunk 0.5 toward the rookie average. Scoring moves with the notebook 17 draw:
+  m = exp(0.18 z) / pool mean (k fit on training seasons for 80% coverage). Team goals split season-level
+  (multinomial) by g60 x m x minutes, assists by a60 x m x minutes at the real 0/1/2 mix. Goalies get the
+  decision and GA (no empty-net or shootout goals) of their starts; no save %. run_scenario(stat_lines=True)
+  uses its own random stream (standings unchanged); season_lines() = real so far (boxscores) + simulated.
+  Notebook 27 adds scoring.csv, scoring.json, real_games.csv to the bundle; boxscores in
+  data/schedule_raw/2026-27/boxscores/ (only new games download), club totals in data/current_raw/club_stats/
+  (cross-check). After a notebook 26 REFRESH, rerun notebook 27.
+- app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
+  leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
+  data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).
+  HOCKEY_SIMULATOR_DIR overrides the bundle path. Streamlit doesn't reload this module on edit: restart the app.
 - app_data/cards.csv: slim public card table (committed), one row per player per season, written
   by notebook 10 via player_card.export_app_table(by_season=True). Only columns the card draws;
   no raw MoneyPuck situation stats. (Notebook 09 wrote the earlier 2025-26-only version.)

@@ -274,7 +274,7 @@ def team_strength(lineups, draws=None):
 # ---------------------------------------------------------------------------
 # 5. Simulating games and seasons
 # ---------------------------------------------------------------------------
-def simulate_games(home, away, skater, goalie, settings, rng, bonus=None, goalie_idx=None):
+def simulate_games(home, away, skater, goalie, settings, rng, bonus=None, goalie_idx=None, details=False):
     """
     Every game in a schedule for every simulated season at once.
     home, away: team positions (arrays of length games). skater, goalie: arrays n_sims x teams (WAR per game).
@@ -283,6 +283,9 @@ def simulate_games(home, away, skater, goalie, settings, rng, bonus=None, goalie
     goalie_idx (notebook 26): (home goalie column, away goalie column) for every game, so each game can have its
     own starting goalie; goalie is then n_sims x goalie columns (each goalie's WAR for a full game). None (the
     default) is notebook 24's model: a team's goalie number is its season mix of starter and backup.
+    details (notebook 27): also return a dict with each side's late goals (late_home, late_away) and the
+    normal-goal margin (margin, home - away), so empty-net goals can be told apart. The random draws are the same
+    either way.
     Returns home goals, away goals, went-to-OT and home-win arrays (n_sims x games).
     """
     s = settings
@@ -311,6 +314,10 @@ def simulate_games(home, away, skater, goalie, settings, rng, bonus=None, goalie
     ot_home = rng.random(m.shape) < p_home
     hg = hg + (ot & ot_home)
     ag = ag + (ot & ~ot_home)
+    if details:
+        late = {"late_home": np.where(home_leads, lead_add, trail_add), "late_away": np.where(home_leads, trail_add, lead_add),
+                "margin": m}
+        return hg, ag, ot, hg > ag, late
     return hg, ag, ot, hg > ag
 
 

@@ -635,3 +635,98 @@ def standings_detail(data):
              "gp": t["gamesPlayed"], "wins": t["wins"], "otl": t["otLosses"], "points": t["points"],
              "rw": t["regulationWins"], "row": t["regulationPlusOtWins"]} for t in data.get("standings", [])]
     return pd.DataFrame(rows).sort_values(["conference", "division", "team"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Real 2026-27 player stats so far (notebook 27): one boxscore per played game, and club totals to check them
+# ---------------------------------------------------------------------------
+BOXSCORE_URL = "https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore"
+CLUB_STATS_URL = "https://api-web.nhle.com/v1/club-stats/{team}/{season}/2"
+
+
+def download_boxscores(game_ids, raw_dir, pause=0.3):
+    """
+    The boxscore of each finished game (raw_dir/{game_id}.json). A finished game never changes, so games already
+    saved are skipped: a refresh only downloads the games played since the last run.
+    """
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    todo = [g for g in game_ids if not (raw_dir / f"{g}.json").exists()]
+    failed = []
+    for gid in todo:
+        data = fetch_url(BOXSCORE_URL.format(game_id=gid), f"boxscore {gid}")
+        if data and data.get("gameState") in ("OFF", "FINAL"):
+            (raw_dir / f"{gid}.json").write_text(json.dumps(_stamp(data)))
+        else:
+            failed.append(gid)
+        time.sleep(pause)
+    print(f"Boxscores: {len(game_ids) - len(todo)} already saved, {len(todo) - len(failed)} downloaded"
+          + (f"; failed (run again): {failed[:10]}" if failed else ""))
+    return failed
+
+
+def _minutes(toi):
+    """'64:55' -> 64.92 minutes."""
+    m, s = str(toi).split(":")
+    return int(m) + int(s) / 60
+
+
+def boxscore_lines(raw_dir):
+    """
+    One row per player per game from the saved boxscores: game_id, date, team, playerId, name, position, group
+    (F, D, G), goals, assists, toi (minutes); goalies also goals_against, decision (W, L, O = OT/SO loss, or
+    empty if he didn't get it) and starter.
+    """
+    rows = []
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        b = json.loads(f.read_text())
+        for side in ["awayTeam", "homeTeam"]:
+            team = b[side]["abbrev"]
+            stats = b["playerByGameStats"][side]
+            for key, group in [("forwards", "F"), ("defense", "D"), ("goalies", "G")]:
+                for p in stats.get(key, []):
+                    rows.append({"game_id": b["id"], "date": b["gameDate"], "team": team, "playerId": p["playerId"],
+                                 "name": p["name"]["default"], "position": p["position"], "group": group,
+                                 "goals": p.get("goals", 0), "assists": p.get("assists", 0), "toi": _minutes(p["toi"]),
+                                 "goals_against": p.get("goalsAgainst") if group == "G" else np.nan,
+                                 "decision": p.get("decision", "") if group == "G" else "",
+                                 "starter": p.get("starter", False) if group == "G" else False})
+    return pd.DataFrame(rows).sort_values(["date", "game_id", "team", "playerId"]).reset_index(drop=True)
+
+
+def download_club_stats(teams, raw_dir, season=2026, refresh=False, pause=0.3):
+    """Each team's regular-season player totals so far (raw_dir/{TEAM}.json). refresh=False skips saved teams."""
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    todo = [t for t in teams if refresh or not (raw_dir / f"{t}.json").exists()]
+    failed = []
+    for team in todo:
+        data = fetch_url(CLUB_STATS_URL.format(team=team, season=f"{season}{season + 1}"), f"club stats {team}")
+        if data:
+            (raw_dir / f"{team}.json").write_text(json.dumps(_stamp(data)))
+        else:
+            failed.append(team)
+        time.sleep(pause)
+    print(f"Club stats: {len(teams) - len(todo)} already saved, {len(todo) - len(failed)} downloaded"
+          + (f"; failed (run again): {failed}" if failed else ""))
+    return failed
+
+
+def club_stats_table(raw_dir):
+    """
+    (skaters, goalies) from the saved club stats, one row per player per team (a traded player has a row for each).
+    skaters: team, playerId, name, gp, goals, assists, points. goalies: team, playerId, name, gp, wins, losses,
+    otl, goals_against, toi (minutes).
+    """
+    sk, gk = [], []
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        d = json.loads(f.read_text())
+        team = f.stem
+        for p in d.get("skaters", []):
+            sk.append({"team": team, "playerId": p["playerId"], "name": f"{p['firstName']['default']} {p['lastName']['default']}",
+                       "gp": p["gamesPlayed"], "goals": p["goals"], "assists": p["assists"], "points": p["points"]})
+        for p in d.get("goalies", []):
+            gk.append({"team": team, "playerId": p["playerId"], "name": f"{p['firstName']['default']} {p['lastName']['default']}",
+                       "gp": p["gamesPlayed"], "wins": p["wins"], "losses": p["losses"], "otl": p["overtimeLosses"],
+                       "goals_against": p["goalsAgainst"], "toi": p["timeOnIce"] / 60})
+    return pd.DataFrame(sk), pd.DataFrame(gk)

@@ -1,13 +1,16 @@
 """
-Simulator page: play the rest of the 2026-27 season thousands of times, with the trades and sit-outs you pick,
-and see each team's points and playoff odds.
+The Simulator tab of the Forecast page (app_pages/forecast.py calls show_simulator()). Not a page of its own any
+more: app.py lists only Almanac and Forecast.
 
-Reads the bundle notebook 26 saves (data/simulator_2026-27/: players.csv, schedule.csv, settings.json) and the
-hand-kept trades file (data/trades_2026-27.csv). data/ is gitignored, so the live site doesn't have them; then
-this page shows a short message and stops, and the Almanac page keeps working. Nothing here recomputes WAR or
-calls the NHL: the simulator itself is src/season.py.
+It plays the rest of the 2026-27 season with the trades and sit-outs you pick, either once (a full season with
+standings, leaders and box-score-style stat lines) or 10,000 times (playoff odds and ranges). The simulator
+itself is src/season.py.
 
-To test with the missing-files message, point it somewhere empty:
+It reads the bundle notebooks 26 and 27 save (data/simulator_2026-27/) and the hand-kept trades file
+(data/trades_2026-27.csv). data/ is gitignored, so the live site doesn't have them: then this tab shows a short
+message, and the rest of the app keeps working. Nothing here recomputes WAR or calls the NHL.
+
+To test the missing-files message, point it somewhere empty:
     HOCKEY_SIMULATOR_DIR=/nonexistent /opt/anaconda3/envs/hockey/bin/python -m streamlit run app.py
 """
 
@@ -20,208 +23,243 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parent.parent           # the project folder (this file is in app_pages/)
+ROOT = Path(__file__).resolve().parent.parent            # the project folder (this file is in app_pages/)
 BUNDLE_DIR = Path(os.environ.get("HOCKEY_SIMULATOR_DIR", ROOT / "data" / "simulator_2026-27"))
 TRADES_PATH = ROOT / "data" / "trades_2026-27.csv"
-NEEDED = [BUNDLE_DIR / "players.csv", BUNDLE_DIR / "schedule.csv", BUNDLE_DIR / "settings.json", TRADES_PATH]
-DEFAULT_TEAM = "DET"
+NEEDED = [BUNDLE_DIR / f for f in ["players.csv", "schedule.csv", "settings.json", "scoring.csv", "scoring.json",
+                                   "real_games.csv"]] + [TRADES_PATH]
 OPENING_NIGHT = date(2026, 9, 29)
-
-st.title("Simulator: 2026-27")
-
-if not all(p.exists() for p in NEEDED):
-    st.info("Simulator runs locally for now. It needs the season inputs built by notebook 26, which aren't on "
-            "the live site yet. The Almanac (menu at the top) works as usual.")
-    st.stop()          # stops this page only; the Almanac page is unaffected
-
-# Imported only now: the live site stops above, so it never needs the simulator's extra packages (scipy).
-sys.path.append(str(ROOT / "src"))
-import season as SE  # noqa: E402
+DEFAULT_TEAM = "DET"
+MODES = ["Play one season", "Run 10,000"]
 
 
 # ---------------------------------------------------------------------------
-# Loading and running (cached, because Streamlit reruns this file on every click)
+# Loading and running (cached, because Streamlit reruns the page on every click)
 # ---------------------------------------------------------------------------
+def _season():
+    """The simulator module, imported only when the files are there (the live site never gets this far, so it
+    never needs the simulator's extra packages, like scipy)."""
+    if str(ROOT / "src") not in sys.path:
+        sys.path.append(str(ROOT / "src"))
+    import season
+    return season
+
+
 def file_stamp():
-    """The files' modification times: part of every cache key, so a new notebook 26 run is picked up."""
+    """The files' modification times: part of every cache key, so new notebook runs are picked up."""
     return tuple(p.stat().st_mtime for p in NEEDED)
 
 
 @st.cache_resource
 def load(stamp):
-    """Read the bundle once (stamp isn't used inside; it only makes a rewritten file load again)."""
-    return SE.load_bundle(BUNDLE_DIR, TRADES_PATH)
+    """Read the bundle once (stamp isn't used inside; it only makes rewritten files load again)."""
+    return _season().load_bundle(BUNDLE_DIR, TRADES_PATH)
 
 
-@st.cache_data(show_spinner=False, max_entries=20)
-def run(stamp, start_date, trade_ids, sit_out, n_sims, seed):
-    """One scenario. Cached by its inputs: the same inputs come back instantly the second time."""
-    res = SE.run_scenario(load(stamp), start_date=start_date, trade_ids=list(trade_ids), sit_out=list(sit_out),
-                          n_sims=n_sims, seed=seed)
-    keep = ["table", "points", "lineups", "start_date", "trades", "sit_out", "n_sims", "seed",
-            "games_simulated", "games_locked", "seconds", "teams"]
-    return {k: res[k] for k in keep}
+@st.cache_data(show_spinner=False, max_entries=30)
+def run(stamp, start_date, trade_ids, sit_out, n_sims, seed, stat_lines=True):
+    """One scenario, cached by its inputs: the same inputs come back instantly the second time.
+    Returns the team table, the season lines (real so far + simulated), seeds and the lineups."""
+    SE = _season()
+    bundle = load(stamp)
+    res = SE.run_scenario(bundle, start_date=start_date, trade_ids=list(trade_ids), sit_out=list(sit_out),
+                          n_sims=n_sims, seed=seed, stat_lines=stat_lines)
+    out = {k: res[k] for k in ["table", "lineups", "teams", "start_date", "trades", "sit_out", "n_sims", "seed",
+                               "games_simulated", "games_locked", "seconds"]}
+    out["seeds"] = res["seeds"][0] if n_sims == 1 else None
+    if stat_lines:
+        out["skaters"], out["goalies"] = SE.season_lines(res, bundle)
+    return out
 
 
-stamp = file_stamp()
-B = load(stamp)
-players = B["players"]
-trades = B["trades"]
-last_day = date.fromisoformat(B["schedule_downloaded"][:10])      # results are saved through the day before
+def trade_label(t):
+    """'T1, Oct 23: Hellebuyck to NJD (Mercer, Daws, Bjugstad, Command to WPG)' from one trade's rows."""
+    d = pd.Timestamp(t["date"].iloc[0])
+    last = lambda names: ", ".join(n.split(" ", 1)[-1] for n in names)
+    first_to = t["to_team"].iloc[0]
+    a, b = t[t["to_team"] == first_to], t[t["to_team"] != first_to]
+    text = f"{t['trade_id'].iloc[0]}, {d:%b} {d.day}: {last(a['name'])} to {first_to}"
+    if len(b):
+        text += f" ({last(b['name'])} to {b['to_team'].iloc[0]})"
+    return text
 
-st.caption(f"The real 2026-27 schedule (84 games per team), with real results of every game before {last_day} "
-           "(the day it was downloaded; notebook 26 refreshes it). Each run plays the season thousands of times. "
-           "Data: MoneyPuck.com, NHL.")
 
-with st.expander("How it works"):
-    st.markdown(
-        """
-- **What's simulated:** every game on or after the start date, thousands of times. Each game's score is random,
-  tilted by the two lineups' projected WAR (skaters and the starting goalie), home ice and each team's bonus.
-  Late empty-net and 6-on-5 goals, overtime and shootouts follow what really happens in NHL games.
-- **What's locked in:** every real game before the start date counts with its real result (points, wins,
-  regulation wins). Opening night (Sept 29) locks in nothing.
-- **Lineups are fixed at the start date.** Each team dresses 12 forwards (4 centers), 6 defensemen and 2 goalies
-  by notebook 23's coach score, after the trades you tick and the players you sit. Everyone else is at
-  **full health**: no injuries and no in-season changes.
-- **Goalies:** the backup starts the second night of every back-to-back, plus enough other games (spread evenly)
-  to make about 30 of 84; the starter plays the rest.
-- **Each player's season is random too:** better or worse than projected, by how much players like him
-  usually miss (notebook 17).
-- **Team bonus:** about 40% of how much each team beat (or missed) what its players predicted in 2025-26.
-  It stays with the team through trades and sit-outs.
-- **Playoffs:** top 3 in each division plus 2 wild cards per conference. Ties: regulation wins, then
-  regulation + overtime wins, then a coin flip (head-to-head, goal difference and goals for are skipped).
-- **Results are a range, not a prediction.** The 10th-90th range is what a single season can look like.
+# ---------------------------------------------------------------------------
+# The tab
+# ---------------------------------------------------------------------------
+def show_simulator():
+    if not all(p.exists() for p in NEEDED):
+        st.info("Simulator runs locally for now. It needs the season inputs built by notebooks 26 and 27, which "
+                "aren't on the live site yet. The other tabs and the Almanac work as usual.")
+        return
+    SE = _season()
+    stamp = file_stamp()
+    B = load(stamp)
+    players, trades = B["players"], B["trades"]
+    last_day = date.fromisoformat(B["schedule_downloaded"][:10])
+
+    st.caption(f"The real 2026-27 schedule, with real results and real stats from every game before {last_day} "
+               "(when notebooks 26-27 last downloaded them).")
+    with st.expander("How it works"):
+        st.markdown(
+            """
+- **Simulated:** every game on or after the start date. Each score is random, tilted by the two lineups'
+  projected WAR (skaters and that night's goalie), home ice and each team's bonus (about 40% of how much it beat
+  or missed its players' projection in 2025-26). **Locked in:** every real game before the start date.
+- **Lineups are fixed at the start date,** after the trades and sit-outs you pick, at **full health**.
+  The backup goalie starts the second night of back-to-backs, plus enough games to make about 30 of 84.
+- **Stat lines:** a team's simulated goals go to its dressed skaters by goals per 60 x minutes; each goal gets
+  0, 1 or 2 assists at the real mix, by assists per 60 x minutes, never to the scorer. Each player's rates
+  move with his random season (a breakout in WAR is a breakout in scoring). Goalies get the decision and goals
+  against of the games they start. After opening night, lines are **real stats so far + the simulated rest**.
+  No save % yet (the simulator has no shots).
+- **Results are a range, not a prediction.** One season is one possible season; 10,000 show the range.
 """
-    )
+        )
 
-# ---------------------------------------------------------------------------
-# Controls
-# ---------------------------------------------------------------------------
-st.subheader("Scenario")
-start = st.date_input("Start date", value=OPENING_NIGHT, min_value=OPENING_NIGHT, max_value=last_day,
-                      help="Real results before this date are locked in; the rest of the season is simulated.")
-start_str = start.isoformat()
-default_trades = set(SE.default_trades(trades, start_str))
-
-st.markdown("**Trades** (ticked: made on or before the start date; tick or untick any)")
-chosen_trades = []
-for tid, t in trades.groupby("trade_id", sort=True):
-    moves = "; ".join(f"{n} {a} to {b}" for n, a, b in zip(t["name"], t["from_team"], t["to_team"]))
-    # The key includes the start date, so changing the date resets the ticks to that date's default
-    if st.checkbox(f"{tid} ({t['date'].iloc[0]}): {moves}", value=tid in default_trades, key=f"trade_{tid}_{start_str}"):
-        chosen_trades.append(tid)
-
-pool = players[players["in_pool"]].sort_values(["team", "name"])
-labels = {pid: f"{n} ({tm}, {pos})" for pid, n, tm, pos in zip(pool["playerId"], pool["name"], pool["team"], pool["position"])}
-sit_out = st.multiselect("Players sitting out (type to search)", options=list(labels), format_func=labels.get,
+    # ---- Controls ----
+    c1, c2 = st.columns(2)
+    start = c1.date_input("Start date", value=OPENING_NIGHT, min_value=OPENING_NIGHT, max_value=last_day, key="sim_start",
+                          help="Real results before this date are locked in; the rest of the season is simulated.")
+    mode = c2.radio("Mode", MODES, horizontal=True, key="sim_mode")
+    start_str = start.isoformat()
+    labels = {tid: trade_label(t) for tid, t in trades.groupby("trade_id", sort=True)}
+    chosen = st.multiselect("Trades in effect", list(labels), default=SE.default_trades(trades, start_str),
+                            format_func=labels.get, key=f"sim_trades_{start_str}",   # resets when the date changes
+                            help="Default: every trade made on or before the start date. Add or remove any.")
+    pool = players[players["in_pool"]].sort_values(["team", "name"])
+    who = {p: f"{n} ({t}, {pos})" for p, n, t, pos in zip(pool["playerId"], pool["name"], pool["team"], pool["position"])}
+    sit = st.multiselect("Players sitting out (type to search)", list(who), format_func=who.get, key="sim_sit",
                          help="They leave their team's lineup for every simulated game; the next player up dresses.")
-c1, c2 = st.columns(2)
-n_sims = c1.radio("Simulated seasons", [1000, 10000], index=1, horizontal=True,
-                  help="10,000 is steadier and takes several seconds; 1,000 is quick.")
-seed = int(c2.number_input("Seed", value=0, step=1, help="The same inputs and seed always give the same results."))
-inputs = (start_str, tuple(sorted(chosen_trades)), tuple(sorted(sit_out)), int(n_sims), seed)
-if st.button("Run", type="primary") or "inputs" not in st.session_state:
-    st.session_state["inputs"] = inputs           # the first visit runs the defaults (opening night)
+    if "sim_seed" not in st.session_state:
+        st.session_state["sim_seed"] = 0
 
-# ---------------------------------------------------------------------------
-# Results
-# ---------------------------------------------------------------------------
-shown = st.session_state["inputs"]
-with st.spinner("Simulating..."):
-    res = run(stamp, *shown)
-    base = run(stamp, OPENING_NIGHT.isoformat(), (), (), shown[3], shown[4])   # opening night, nothing changed
-if shown != inputs:
-    st.warning("The controls have changed since this run. Press **Run** to update the results.")
+    def again():
+        st.session_state["sim_seed"] += 1           # a new seed is a new season
+        st.session_state["sim_go"] = True
 
-name_of = players.set_index("playerId")["name"]
-st.markdown(
-    f"**Showing:** from {res['start_date']} ({res['games_locked']} real games locked in, "
-    f"{res['games_simulated']:,} simulated), {res['n_sims']:,} seasons, seed {res['seed']}. "
-    f"Trades: {', '.join(res['trades']) or 'none'}. "
-    f"Sitting out: {', '.join(name_of[p] for p in res['sit_out']) or 'nobody'}. "
-    f"({res['seconds']:.1f} seconds the first time; cached after that.)")
+    c3, c4, c5 = st.columns([2, 1, 1])
+    c3.number_input("Seed", step=1, key="sim_seed", help="The same inputs and seed always give the same results.")
+    go = c4.button("Run", type="primary", key="sim_run")
+    if mode == MODES[0]:
+        c5.button("Simulate again", on_click=again, key="sim_again")
+    n_sims = 1 if mode == MODES[0] else 10000
+    inputs = (start_str, tuple(sorted(chosen)), tuple(sorted(sit)), n_sims, int(st.session_state["sim_seed"]))
+    if go or st.session_state.pop("sim_go", False) or "sim_inputs" not in st.session_state \
+            or st.session_state["sim_inputs"][3] != n_sims:
+        st.session_state["sim_inputs"] = inputs     # first visit or a new mode: run right away
 
-COLS = {
-    "team": st.column_config.TextColumn("Team"),
-    "points": st.column_config.NumberColumn("Points", format="%.1f", help="Average over the simulated seasons"),
-    "p10": st.column_config.NumberColumn("10th", format="%.0f", help="10% of seasons end at or below this"),
-    "p90": st.column_config.NumberColumn("90th", format="%.0f", help="10% of seasons end at or above this"),
-    "wins": st.column_config.NumberColumn("W", format="%.1f"),
-    "losses": st.column_config.NumberColumn("L", format="%.1f"),
-    "otl": st.column_config.NumberColumn("OTL", format="%.1f"),
-    "goal_diff": st.column_config.NumberColumn("GD", format="%+.0f"),
-    "playoff_pct": st.column_config.NumberColumn("Playoffs %", format="%.1f"),
-    "division_pct": st.column_config.NumberColumn("Division %", format="%.1f"),
-    "presidents_pct": st.column_config.NumberColumn("Presidents' %", format="%.1f"),
-    "avg_rank": st.column_config.NumberColumn("Avg rank", format="%.1f", help="Final league rank, 1 = best"),
-    "real_points": st.column_config.NumberColumn("Real pts so far", format="%d"),
-    "real_gp": st.column_config.NumberColumn("GP so far", format="%d"),
-}
+    shown = st.session_state["sim_inputs"]
+    with st.spinner("Simulating..." if shown[3] == 1 else "Simulating 10,000 seasons (about 10 seconds the first time)..."):
+        res = run(stamp, *shown)
+    if shown != inputs:
+        st.warning("The controls have changed since this run. Press **Run** to update the results.")
+    names = players.set_index("playerId")["name"]
+    real_part = res["games_locked"] > 0
+    st.markdown(
+        f"**Showing:** from {res['start_date']} ({res['games_locked']} real games locked in, {res['games_simulated']:,} "
+        f"simulated), {'one season' if res['n_sims'] == 1 else f'{res['n_sims']:,} seasons'}, seed {res['seed']}. "
+        f"Trades: {', '.join(res['trades']) or 'none'}. Sitting out: {', '.join(names[p] for p in res['sit_out']) or 'nobody'}.")
+    if res["n_sims"] == 1:
+        show_one_season(res, real_part)
+    else:
+        show_many(res, stamp, real_part)
 
-st.subheader("Standings")
-table = res["table"]
-cols = list(COLS) if res["games_locked"] else [c for c in COLS if not c.startswith("real")]
-tabs = st.tabs(sorted(table["division"].unique()))
-for tab, div in zip(tabs, sorted(table["division"].unique())):
-    with tab:
-        d = table[table["division"] == div].sort_values("points", ascending=False)
-        st.dataframe(d[cols], column_config=COLS, hide_index=True, width="stretch")   # click a header to sort
 
-# ---------------------------------------------------------------------------
-# One team up close
-# ---------------------------------------------------------------------------
-st.subheader("Team focus")
-teams = list(res["teams"])
-team = st.selectbox("Team", teams, index=teams.index(DEFAULT_TEAM))
-i = teams.index(team)
-row = table.set_index("team").loc[team]
-brow = base["table"].set_index("team").loc[team]
-m1, m2, m3 = st.columns(3)
-m1.metric("Points (average)", f"{row['points']:.1f}", f"{row['points'] - brow['points']:+.1f} vs. opening night",
-          delta_color="normal")
-m2.metric("Playoffs", f"{row['playoff_pct']:.1f}%", f"{row['playoff_pct'] - brow['playoff_pct']:+.1f} vs. opening night")
-m3.metric("Range (10th to 90th)", f"{row['p10']:.0f} to {row['p90']:.0f}")
-st.caption("\"vs. opening night\" compares with the opening-night baseline (no trades, nobody sitting) with the same "
-           "number of seasons and seed.")
+def team_picker(res, key):
+    teams = list(res["teams"])
+    return st.selectbox("Team", teams, index=teams.index(DEFAULT_TEAM), key=key)
 
-pts = res["points"][:, i]
-dist = pd.Series(pts).value_counts(normalize=True).sort_index() * 100
-dist = dist.reindex(np.arange(int(pts.min()), int(pts.max()) + 1), fill_value=0)
-st.markdown(f"**{team}'s final points**, share of simulated seasons (%)")
-st.bar_chart(dist.rename_axis("points").rename("% of seasons"))
 
-lu = res["lineups"]
-lu = lu[(lu["team"] == team) & lu["dressed"]].copy()
-lu["OVR"] = lu["ovr"].round().astype("Int64")
-lu["Minutes"] = lu["minutes_per_game"].round(1)
-lu["Note"] = np.where(lu["status"] == "NHL roster", "", lu["status"]) + np.where(lu["flag"].fillna("") != "", " " + lu["flag"].fillna(""), "")
-st.markdown(f"**{team}'s lineup in this run** (fixed for every simulated game)")
-f = lu[lu["group"] == "F"]
-lines = []
-for k in range(1, 5):
-    ln = f[f["line"] == k]
-    c = ln[ln["role"] == "C"]
-    w = ln[ln["role"] == "W"]
-    for _, r in pd.concat([w.head(1), c, w.iloc[1:]]).iterrows():      # left wing, center, right wing
-        lines.append({"Line": f"F{k}", "Role": r["role"], "Player": r["name"], "OVR": r["OVR"], "Minutes": r["Minutes"],
-                      "Note": r["Note"]})
-d_ = lu[lu["group"] == "D"].sort_values("rank")
-for _, r in d_.iterrows():
-    lines.append({"Line": f"D{int(r['line'])}", "Role": "D", "Player": r["name"], "OVR": r["OVR"], "Minutes": r["Minutes"],
-                  "Note": r["Note"]})
-starts = B["goalie_starts"][(B["schedule"]["date"] >= res["start_date"]).to_numpy()]
-games = B["schedule"][(B["schedule"]["date"] >= res["start_date"]).to_numpy()]
-backup = int(((games["home"] == team) & starts["home_backup"]).sum() + ((games["away"] == team) & starts["away_backup"]).sum())
-total = int(((games["home"] == team) | (games["away"] == team)).sum())
-for _, r in lu[lu["group"] == "G"].sort_values("rank").iterrows():
-    n_starts = total - backup if r["rank"] == 1 else backup
-    lines.append({"Line": "G", "Role": "Starter" if r["rank"] == 1 else "Backup", "Player": r["name"], "OVR": r["OVR"],
-                  "Minutes": 60.0, "Note": f"{n_starts} of {total} starts" + (f"; {r['Note'].strip()}" if r["Note"].strip() else "")})
-st.dataframe(pd.DataFrame(lines), hide_index=True, width="stretch", height=35 * (len(lines) + 1) + 3,   # all rows, no scrolling
-             column_config={"OVR": st.column_config.NumberColumn("OVR", format="%d"),
-                            "Minutes": st.column_config.NumberColumn("Min/game", format="%.1f")})
-st.caption("OVR is the Forecast page's rating. Minutes per game come from notebook 24's blend of the slot and the "
-           "player's own recent ice time; a goalie plays the full 60 of every game he starts. Note shows starts, anyone "
-           "not on the NHL roster (a dispute, a call-up) and lineup rules used.")
+def show_one_season(res, real_part):
+    """One simulated season: standings with seeds, league leaders, a team's box score."""
+    SE = _season()
+    t = res["table"].copy()
+    t["seed"] = [SE.SEED_LABELS[int(x)] for x in res["seeds"]]
+    st.subheader("Final standings")
+    st.caption("Seed: 1-3 in the division, or the conference's first and second wild card (WC1, WC2). "
+               "Ties: regulation wins, then regulation + overtime wins, then a coin flip.")
+    cols = {"seed": st.column_config.TextColumn("Seed"), "team": st.column_config.TextColumn("Team"),
+            "wins": st.column_config.NumberColumn("W", format="%d"), "losses": st.column_config.NumberColumn("L", format="%d"),
+            "otl": st.column_config.NumberColumn("OTL", format="%d"), "points": st.column_config.NumberColumn("PTS", format="%d"),
+            "goal_diff": st.column_config.NumberColumn("GD", format="%+d")}
+    divs = sorted(t["division"].unique())
+    for tab, div in zip(st.tabs(divs), divs):
+        with tab:
+            d = t[t["division"] == div].sort_values("avg_rank")       # league rank, tiebreakers included
+            st.dataframe(d[list(cols)], column_config=cols, hide_index=True, width="stretch")
+
+    sk, gk = res["skaters"], res["goalies"]
+    st.subheader("League leaders")
+    who = lambda d: d["name"] + " (" + d["team"] + ")"          # "Connor McDavid (EDM)"
+    boards = [(sk.sort_values(["p", "g"], ascending=False), "p", "Points"),
+              (sk.sort_values(["g", "p"], ascending=False), "g", "Goals"),
+              (sk.sort_values(["a", "p"], ascending=False), "a", "Assists"),
+              (gk.sort_values(["w", "gaa"], ascending=[False, True]), "w", "Goalie wins")]
+    for i in range(0, 4, 2):                                    # two boards per row, so the numbers fit
+        for col, (d, stat, title) in zip(st.columns(2), boards[i:i + 2]):
+            top = d.head(10)
+            col.markdown(f"**{title}**")
+            col.dataframe(pd.DataFrame({"Player": who(top).to_numpy(), title.split()[-1][0]: top[stat].astype(int).to_numpy()}),
+                          hide_index=True, width="stretch")
+
+    st.subheader("Team stats")
+    team = team_picker(res, "sim_team_one")
+    if real_part:
+        st.caption(f"Season (GP, G, A, P) = real games before {res['start_date']} (Real) + the simulated rest (Sim).")
+    s = sk[sk["team"] == team].sort_values(["p", "g"], ascending=False)
+    scols = ["name", "position", "gp", "g", "a", "p"]
+    heads = {"name": "Player", "position": "Pos", "gp": "GP", "g": "G", "a": "A", "p": "P"}
+    if real_part:
+        scols = scols + ["real_gp", "real_g", "real_a", "real_p", "sim_gp", "sim_g", "sim_a", "sim_p"]   # season first
+        heads.update({"real_gp": "Real GP", "real_g": "Real G", "real_a": "Real A", "real_p": "Real P",
+                      "sim_gp": "Sim GP", "sim_g": "Sim G", "sim_a": "Sim A", "sim_p": "Sim P"})
+    st.dataframe(s[scols].rename(columns=heads).astype({h: int for c, h in heads.items() if c not in ("name", "position")}),
+                 hide_index=True, width="stretch", height=35 * (len(s) + 1) + 3)     # every player, no scrolling
+    g = gk[gk["team"] == team].sort_values("gp", ascending=False)
+    gcols = {"name": "Goalie", "role": "Role", "gp": "GP", "w": "W", "l": "L", "otl": "OTL", "gaa": "GAA"}
+    st.dataframe(g[list(gcols)].rename(columns=gcols).astype({"GP": int, "W": int, "L": int, "OTL": int}).round({"GAA": 2}),
+                 hide_index=True, width="stretch")
+    st.caption("A goalie's GAA leaves out empty-net goals and shootouts; each start counts as 60 minutes. No save % yet.")
+
+
+def show_many(res, stamp, real_part):
+    """10,000 seasons: playoff odds and point ranges for teams, and stat-line ranges for players."""
+    t = res["table"]
+    cols = {"team": st.column_config.TextColumn("Team"),
+            "points": st.column_config.NumberColumn("Points", format="%.1f", help="Average over the simulated seasons"),
+            "p10": st.column_config.NumberColumn("10th", format="%.0f"), "p90": st.column_config.NumberColumn("90th", format="%.0f"),
+            "playoff_pct": st.column_config.NumberColumn("Playoffs %", format="%.1f"),
+            "division_pct": st.column_config.NumberColumn("Division %", format="%.1f"),
+            "presidents_pct": st.column_config.NumberColumn("Presidents' %", format="%.1f"),
+            "avg_rank": st.column_config.NumberColumn("Avg rank", format="%.1f")}
+    st.subheader("Standings: averages and odds")
+    divs = sorted(t["division"].unique())
+    for tab, div in zip(st.tabs(divs), divs):
+        with tab:
+            st.dataframe(t[t["division"] == div].sort_values("points", ascending=False)[list(cols)], column_config=cols,
+                         hide_index=True, width="stretch")
+
+    base = run(stamp, OPENING_NIGHT.isoformat(), (), (), res["n_sims"], res["seed"], stat_lines=False)
+    st.subheader("Team focus")
+    team = team_picker(res, "sim_team_many")
+    row, brow = t.set_index("team").loc[team], base["table"].set_index("team").loc[team]
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Points (average)", f"{row['points']:.1f}", f"{row['points'] - brow['points']:+.1f} vs. opening night")
+    m2.metric("Playoffs", f"{row['playoff_pct']:.1f}%", f"{row['playoff_pct'] - brow['playoff_pct']:+.1f} vs. opening night")
+    m3.metric("Range (10th to 90th)", f"{row['p10']:.0f} to {row['p90']:.0f}")
+    st.caption("\"vs. opening night\": the opening-night baseline (no trades, nobody sitting), same seed.")
+
+    sk = res["skaters"]
+    rng_cols = {"name": "Player", "team": "Team", "position": "Pos", "gp": "GP", "g": "G", "g_p10": "G 10th", "g_p90": "G 90th",
+                "a": "A", "a_p10": "A 10th", "a_p90": "A 90th", "p": "P", "p_p10": "P 10th", "p_p90": "P 90th"}
+    fmt = {h: st.column_config.NumberColumn(h, format="%.1f" if h in ("G", "A", "P", "GP") else "%.0f")
+           for c, h in rng_cols.items() if c not in ("name", "team", "position")}
+    note = f" Real stats before {res['start_date']} are included." if real_part else ""
+    st.markdown(f"**{team}: player ranges** (average and 10th to 90th over {res['n_sims']:,} seasons)")
+    team_cols = [c for c in rng_cols if c != "team"]                 # one team: no need for a Team column
+    st.dataframe(sk[sk["team"] == team].sort_values("p", ascending=False)[team_cols].rename(columns=rng_cols),
+                 column_config=fmt, hide_index=True, width="stretch")
+    st.markdown("**League top 25 scorers** (average points)")
+    st.dataframe(sk.head(25)[list(rng_cols)].rename(columns=rng_cols), column_config=fmt, hide_index=True, width="stretch")
+    st.caption("Fixed lineups at full health: a dressed skater plays every game, so totals run a little high." + note)

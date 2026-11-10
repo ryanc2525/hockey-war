@@ -1,5 +1,7 @@
 """
-Forecast page: 2026-27 OVR ratings and projections for every NHL player and prospect. View only.
+Forecast page: 2026-27 OVR ratings and projections for every NHL player and prospect, and the season simulator.
+Three tabs: Players (one player's rating, and a leaderboard), Teams (a team's roster and system) and Simulator
+(app_pages/simulator.py: play the season once or 10,000 times).
 
 Reads one file, data/forecast_table_2026-27.csv (written by notebook 20). data/ is gitignored, so the live
 site doesn't have it; then this page shows a short message and stops, and the Almanac page keeps working.
@@ -9,6 +11,7 @@ To test with a different file (or a missing one), set the environment variable H
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -196,7 +199,7 @@ with st.expander("How to read this"):
 """
     )
 
-player_tab, board_tab, team_tab = st.tabs(["Player", "Leaderboard", "Team"])
+player_tab, team_tab, sim_tab = st.tabs(["Players", "Teams", "Simulator"])
 
 with player_tab:
     choice = st.selectbox(
@@ -212,7 +215,8 @@ with player_tab:
     else:
         show_player(table.loc[choice])
 
-with board_tab:
+    st.divider()
+    st.subheader("Leaderboard")
     c1, c2 = st.columns(2)
     teams = c1.multiselect("Team", sorted(table["team"].unique()), placeholder="All teams", key="board_teams")
     group = c2.selectbox("Position", list(GROUP_FILTER), key="board_group")
@@ -249,3 +253,11 @@ with team_tab:
                "\"if he played NHL minutes this season\".")
     show_table(system, ["name", "position", "age", "status", "ovr", "war_std", "draft_year", "pick", "league_2025_26",
                         "gp_2025_26", "points_2025_26"])
+
+with sim_tab:
+    # The simulator has its own module. It checks for its files first and imports the simulator only if they're
+    # there, so on the live site this tab just shows a short message.
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+    from app_pages.simulator import show_simulator
+    show_simulator()

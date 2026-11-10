@@ -26,6 +26,7 @@ import pandas as pd
 
 import lineups as L
 import simulate as S
+import scoring as SC
 
 SEASON = 2026
 OPENING_NIGHT = "2026-09-29"
@@ -109,7 +110,19 @@ def load_bundle(bundle_dir, trades_path):
     return {"players": players, "schedule": schedule, "slots": slots, "share": st["share"], "game": game,
             "bonus": st["bonus"], "divisions": divisions, "so_share": st["so_share"], "pools": pools, "fit": fit,
             "trades": trades, "schedule_downloaded": st["schedule_downloaded"],
-            "goalie_starts": goalie_starts(schedule, st["share"])}
+            "goalie_starts": goalie_starts(schedule, st["share"]), **_load_stat_files(d)}
+
+
+def _load_stat_files(d):
+    """Notebook 27's files, when they're there: scoring rates (scoring.csv), stat-line settings (scoring.json) and
+    real 2026-27 games so far, one row per player per game (real_games.csv)."""
+    out = {}
+    if (d / "scoring.csv").exists() and (d / "scoring.json").exists():
+        out["scoring"] = pd.read_csv(d / "scoring.csv").set_index("playerId")
+        out["stat_settings"] = json.loads((d / "scoring.json").read_text())
+    if (d / "real_games.csv").exists():
+        out["real_games"] = pd.read_csv(d / "real_games.csv")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -212,17 +225,20 @@ def _expected_sd(fit, group, minutes):
 # ---------------------------------------------------------------------------
 # 4. Standings: ranks, division titles, wild cards
 # ---------------------------------------------------------------------------
-def rank_seasons(teams, divisions, points, rw, row, rng):
+def rank_seasons(teams, divisions, points, rw, row, rng, seeds=False):
     """
     For every simulated season (rows): each team's league rank and whether it won its division, made the
     playoffs or won the Presidents' Trophy. Order: points, then regulation wins, then regulation + overtime wins,
     then a coin flip (the real tiebreakers after those are skipped: see SKIPPED_TIEBREAKERS).
+    seeds=True (notebook 27) also returns each team's playoff seed: 1-3 = its place in its division,
+    4 = first wild card, 5 = second wild card, 0 = out. The ranks are the same either way.
     """
     n, T = points.shape
     key = points * 1e6 + rw * 1e3 + row + rng.random((n, T))       # one number that sorts in that order
     league_rank = (-key).argsort(axis=1).argsort(axis=1) + 1
     div = divisions.set_index("team").loc[teams]
     div_win, playoff = np.zeros((n, T), bool), np.zeros((n, T), bool)
+    seed = np.zeros((n, T), np.int8)
     for conf in sorted(div["conference"].unique()):
         in_conf = np.flatnonzero((div["conference"] == conf).to_numpy())
         top3 = np.zeros((n, T), bool)
@@ -231,16 +247,21 @@ def rank_seasons(teams, divisions, points, rw, row, rng):
             r = (-key[:, cols]).argsort(axis=1).argsort(axis=1) + 1
             div_win[:, cols] = r == 1
             top3[:, cols] = r <= DIVISION_SPOTS
+            seed[:, cols] = np.where(r <= DIVISION_SPOTS, r, 0)
         rest = np.where(top3[:, in_conf], -np.inf, key[:, in_conf])  # wild cards: best of the others
         r = (-rest).argsort(axis=1).argsort(axis=1) + 1
         playoff[:, in_conf] = top3[:, in_conf] | (r <= WILD_CARDS)
+        seed[:, in_conf] = np.where(top3[:, in_conf], seed[:, in_conf], np.where(r <= WILD_CARDS, DIVISION_SPOTS + r, 0))
+    if seeds:
+        return league_rank, div_win, playoff, league_rank == 1, seed
     return league_rank, div_win, playoff, league_rank == 1
 
 
 # ---------------------------------------------------------------------------
 # 5. One scenario
 # ---------------------------------------------------------------------------
-def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=10000, seed=0, use_bonus=True, chunk=1000):
+def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=10000, seed=0, use_bonus=True, chunk=1000,
+                 stat_lines=False, keep_seasons=False):
     """
     Simulates the rest of the 2026-27 season n_sims times.
       start_date: None = opening night. A later date (YYYY-MM-DD) locks in every real game before it; only games
@@ -248,6 +269,11 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
       trade_ids: None = default_trades for the start date; a list (even an empty one) overrides it.
       sit_out: playerIds who don't play (they leave their team's pool; the next player up dresses).
       use_bonus: the team bonus (notebook 25) on or off.
+      stat_lines (notebook 27; needs its files in the bundle): also give each team's simulated goals and assists to
+        its skaters and each game's decision and goals against to its starting goalie. They use their own random
+        numbers, so team results are exactly the same with or without them. Adds "skaters" and "goalies" tables
+        (simulated games only; season_lines adds real stats so far). keep_seasons: also keep every simulated
+        season's goals and assists per skater ("season_goals", "season_assists": n_sims x skaters).
     Lineups are built once, after trades and sit-outs, and stay fixed: full health, no in-season changes.
     The same inputs and seed always give the same results.
     Returns a dict: table (one row per team), points (n_sims x teams), lineups, and what was applied.
@@ -281,6 +307,23 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     backup_rows = np.array([g_row.get((t, 2), g_row[(t, 1)]) for t in teams])   # no backup: the starter plays
 
     tallies = {k: np.zeros((n_sims, T)) for k in ["points", "wins", "otl", "rw", "row", "gd"]}
+    if stat_lines:
+        # Each dressed skater's team, his place on it (0-17), his rates, minutes and draw pool
+        ss = bundle["stat_settings"]
+        rng_stats = np.random.default_rng([seed, 3])
+        norms = SC.multiplier_norms(bundle["pools"], ss["k"])
+        sk_rows = lu.index[lu["dressed"] & (lu["group"] != "G")].to_numpy()
+        team_of = np.searchsorted(teams, lu.loc[sk_rows, "team"].to_numpy())
+        slot = lu.loc[sk_rows].groupby("team").cumcount().to_numpy()
+        K = int(slot.max()) + 1
+        rates = bundle["scoring"].reindex(lu.loc[sk_rows, "playerId"])
+        mins = lu.loc[sk_rows, "minutes_per_game"].to_numpy()
+        g_weight = rates["g60"].fillna(0).to_numpy() * mins          # goals/60 x minutes per game
+        a_weight = rates["a60"].fillna(0).to_numpy() * mins          # assists/60 x minutes per game
+        sk_pool = bundle["players"].set_index("playerId")["pool_id"].reindex(lu.loc[sk_rows, "playerId"]).to_numpy()
+        season_g = np.zeros((n_sims, len(sk_rows)), np.int16)
+        season_a = np.zeros((n_sims, len(sk_rows)), np.int16)
+        goalie = {k: np.zeros((n_sims, 2 * T)) for k in ["wins", "losses", "otl", "ga"]}
     for c0 in range(0, n_sims, chunk):
         n = min(chunk, n_sims - c0)
         _, z = league_z(bundle, n, rng_draws)
@@ -288,7 +331,9 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
         _, sk, _ = S.team_strength(lu, draws)
         war60 = lu["proj_war_60"].to_numpy()[:, None] + draws            # a goalie's WAR for a full game
         gk = np.concatenate([war60[starter_rows].T, war60[backup_rows].T], axis=1)
-        hg, ag, ot, hw = S.simulate_games(home, away, sk, gk, bundle["game"], rng_games, bonus=bonus, goalie_idx=(gh, ga))
+        out = S.simulate_games(home, away, sk, gk, bundle["game"], rng_games, bonus=bonus, goalie_idx=(gh, ga),
+                               details=stat_lines)
+        hg, ag, ot, hw = out[:4]
         so = ot & (rng_games.random(ot.shape) < bundle["so_share"])     # which OT/SO games were shootouts
         rows = np.repeat(np.arange(n)[:, None], len(home), axis=1)
 
@@ -302,12 +347,38 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
         tallies["rw"][sl] = tally(home, hw & ~ot) + tally(away, aw & ~ot)
         tallies["row"][sl] = tally(home, hw & ~so) + tally(away, aw & ~so)
         tallies["gd"][sl] = tally(home, hg - ag) + tally(away, ag - hg)
+        if stat_lines:
+            late = out[4]
+            so_h, so_a = so & hw, so & aw                               # the shootout winner's extra "goal"
+            team_goals = (tally(home, hg - so_h) + tally(away, ag - so_a)).astype(np.int64)
+            m = SC.scoring_multiplier(z[pos[sk_rows]], sk_pool, norms, ss["k"])     # skaters x n
+            wg, wa = np.zeros((n, T, K)), np.zeros((n, T, K))
+            wg[:, team_of, slot] = g_weight[None, :] * m.T
+            wa[:, team_of, slot] = a_weight[None, :] * m.T
+            wg /= wg.sum(-1, keepdims=True)
+            wa /= wa.sum(-1, keepdims=True)
+            g_split, a_split = SC.split_season(team_goals, wg, wa, ss["mix"], rng_stats)
+            assert (g_split.sum(-1) == team_goals).all()               # every team goal has a scorer
+            season_g[sl] = g_split[:, team_of, slot]
+            season_a[sl] = a_split[:, team_of, slot]
+            # Goalies: the decision and goals against go to the starter of that game. Empty-net goals (the leading
+            # team's late goals) and the shootout "goal" don't count against him.
+            en_h = late["late_home"] * (late["margin"] > 0)
+            en_a = late["late_away"] * (late["margin"] < 0)
+
+            def gtally(idx, vals):
+                return np.bincount((rows * 2 * T + idx[None, :]).ravel(), weights=np.asarray(vals, float).ravel(),
+                                   minlength=n * 2 * T).reshape(n, 2 * T)
+            goalie["wins"][sl] = gtally(gh, hw) + gtally(ga, aw)
+            goalie["losses"][sl] = gtally(gh, aw & ~ot) + gtally(ga, hw & ~ot)
+            goalie["otl"][sl] = gtally(gh, aw & ot) + gtally(ga, hw & ot)
+            goalie["ga"][sl] = gtally(gh, ag - so_a - en_a) + gtally(ga, hg - so_h - en_h)
 
     real = real_so_far(sched, start).reindex(teams).fillna(0)
     for k in tallies:
         tallies[k] += real[k].to_numpy()[None, :]                        # real results before the start date
-    rank, div_win, playoff, presidents = rank_seasons(teams, bundle["divisions"], tallies["points"], tallies["rw"],
-                                                      tallies["row"], rng_games)
+    rank, div_win, playoff, presidents, seeds = rank_seasons(teams, bundle["divisions"], tallies["points"], tallies["rw"],
+                                                             tallies["row"], rng_games, seeds=True)
     pts = tallies["points"]
     div = bundle["divisions"].set_index("team").loc[teams]
     table = pd.DataFrame({"team": teams, "division": div["division"].to_numpy(), "conference": div["conference"].to_numpy(),
@@ -324,7 +395,91 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     table["avg_rank"] = rank.mean(0)
     table["real_gp"] = real["gp"].to_numpy()
     table["real_points"] = real["points"].to_numpy()
-    return {"table": table, "points": pts, "tallies": tallies, "lineups": lu, "teams": teams,
-            "start_date": start, "trades": trades, "sit_out": list(sit_out), "n_sims": n_sims, "seed": seed,
-            "games_simulated": int(sim.sum()), "games_locked": int((sched["played"] & (sched["date"] < start)).sum()),
-            "seconds": time.time() - clock}
+    result = {"table": table, "points": pts, "tallies": tallies, "lineups": lu, "teams": teams, "seeds": seeds,
+              "start_date": start, "trades": trades, "sit_out": list(sit_out), "n_sims": n_sims, "seed": seed,
+              "games_simulated": int(sim.sum()), "games_locked": int((sched["played"] & (sched["date"] < start)).sum())}
+    if stat_lines:
+        left = pd.concat([games["home"], games["away"]]).value_counts().reindex(teams).fillna(0)
+        skl = lu.loc[sk_rows, ["playerId", "name", "team", "position", "group"]].reset_index(drop=True)
+        skl["sim_gp"] = skl["team"].map(left).astype(int)          # fixed lineups: he plays every simulated game
+        for col, arr in [("g", season_g), ("a", season_a), ("p", season_g.astype(np.int32) + season_a)]:
+            skl[f"sim_{col}"] = arr.mean(0)
+            skl[f"sim_{col}_p10"] = np.percentile(arr, 10, axis=0)
+            skl[f"sim_{col}_p90"] = np.percentile(arr, 90, axis=0)
+        starts = np.bincount(gh, minlength=2 * T) + np.bincount(ga, minlength=2 * T)
+        g_rows = np.concatenate([starter_rows, backup_rows])
+        gl = pd.DataFrame({"row": g_rows, "sim_gp": starts, **{f"sim_{k}": v.mean(0) for k, v in goalie.items()}})
+        gl = gl.groupby("row", as_index=False).sum()               # a team without a backup: one goalie
+        gl = lu.loc[gl["row"], ["playerId", "name", "team", "rank"]].reset_index(drop=True).join(gl.drop(columns="row"))
+        gl["role"] = np.where(gl["rank"] == 1, "Starter", "Backup")
+        result.update({"skaters": skl, "goalies": gl.drop(columns="rank")})
+        if keep_seasons:
+            result.update({"season_goals": season_g, "season_assists": season_a})
+    result["seconds"] = time.time() - clock
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 6. Stat lines: real games so far + the simulated rest of the season
+# ---------------------------------------------------------------------------
+def real_lines(bundle, start_date):
+    """
+    Each player's real 2026-27 stats in games before start_date (a game counts if he got ice time; a traded
+    player's teams are combined): skaters real_gp, real_g, real_a, real_p; goalies real_gp, real_w, real_l,
+    real_otl, real_ga, real_min. last_team = the team of his most recent game.
+    """
+    rg = bundle.get("real_games")
+    sk_cols = ["playerId", "name", "position", "last_team", "real_gp", "real_g", "real_a", "real_p"]
+    g_cols = ["playerId", "name", "last_team", "real_gp", "real_w", "real_l", "real_otl", "real_ga", "real_min"]
+    if rg is None:
+        return pd.DataFrame(columns=sk_cols), pd.DataFrame(columns=g_cols)
+    r = rg[(rg["date"] < (start_date or OPENING_NIGHT)) & (rg["toi"] > 0)].sort_values(["date", "game_id"])
+    s = r[r["group"] != "G"].groupby("playerId").agg(name=("name", "last"), position=("position", "last"),
+                                                    last_team=("team", "last"), real_gp=("game_id", "size"),
+                                                    real_g=("goals", "sum"), real_a=("assists", "sum")).reset_index()
+    s["real_p"] = s["real_g"] + s["real_a"]
+    g = r[r["group"] == "G"].assign(w=r["decision"] == "W", l=r["decision"] == "L", o=r["decision"] == "O")
+    g = g.groupby("playerId").agg(name=("name", "last"), last_team=("team", "last"), real_gp=("game_id", "size"),
+                                  real_w=("w", "sum"), real_l=("l", "sum"), real_otl=("o", "sum"),
+                                  real_ga=("goals_against", "sum"), real_min=("toi", "sum")).reset_index()
+    return s[sk_cols], g[g_cols]
+
+
+def season_lines(result, bundle):
+    """
+    Full-season stat lines: real stats before the start date + the simulated rest (run_scenario with stat_lines).
+    At opening night there's nothing real, so it's the simulation alone. A player with real games who isn't in a
+    lineup now (sitting out, sent down, traded to a team he doesn't dress for) keeps his real stats.
+    For many simulated seasons, the 10th and 90th percentiles are real + the simulated percentiles (real numbers
+    don't vary). Goalie GAA = (real + simulated goals against) / (real minutes + 60 x simulated starts) x 60.
+    Returns (skaters, goalies), with the real_, sim_ and season columns side by side.
+    """
+    names = bundle["players"].set_index("playerId")["name"]
+    real_s, real_g = real_lines(bundle, result["start_date"])
+    s = result["skaters"].merge(real_s.drop(columns="name"), on="playerId", how="outer", suffixes=("", "_real"))
+    s["name"] = s["name"].fillna(s["playerId"].map(names)).fillna(s["playerId"].map(real_s.set_index("playerId")["name"]))
+    s["team"] = s["team"].fillna(s["last_team"])
+    s["position"] = s["position"].fillna(s["position_real"])
+    nums = [c for c in s.columns if c.startswith(("sim_", "real_"))]
+    s[nums] = s[nums].fillna(0)
+    for c in ["gp", "g", "a", "p"]:
+        s[c] = s[f"real_{c}"] + s[f"sim_{c}"]
+    for c in ["g", "a", "p"]:
+        for q in ["p10", "p90"]:
+            s[f"{c}_{q}"] = s[f"real_{c}"] + s[f"sim_{c}_{q}"]
+    s = s.drop(columns=["position_real", "last_team"])
+    g = result["goalies"].merge(real_g.drop(columns="name"), on="playerId", how="outer")
+    g["name"] = g["name"].fillna(g["playerId"].map(names)).fillna(g["playerId"].map(real_g.set_index("playerId")["name"]))
+    g["team"] = g["team"].fillna(g["last_team"])
+    g["role"] = g["role"].fillna("Not dressed")
+    nums = [c for c in g.columns if c.startswith(("sim_", "real_"))]
+    g[nums] = g[nums].fillna(0)
+    g["gp"] = g["real_gp"] + g["sim_gp"]
+    for a, b in [("w", "wins"), ("l", "losses"), ("otl", "otl"), ("ga", "ga")]:
+        g[a] = g[f"real_{a}"] + g[f"sim_{b}"]
+    minutes = g["real_min"] + 60 * g["sim_gp"]
+    g["gaa"] = np.where(minutes > 0, g["ga"] / minutes.where(minutes > 0, 1) * 60, np.nan)
+    return s.sort_values("p", ascending=False).reset_index(drop=True), g.drop(columns="last_team")
+
+
+SEED_LABELS = {1: "1", 2: "2", 3: "3", 4: "WC1", 5: "WC2", 0: ""}
