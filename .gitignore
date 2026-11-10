@@ -33,3 +33,5 @@ data/current_raw/
 
 # Past NHL schedules and results (notebook 24; rebuildable)
 data/schedule_raw/
+
+ data/simulator_2026-27/
