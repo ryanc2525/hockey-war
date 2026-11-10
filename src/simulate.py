@@ -274,16 +274,20 @@ def team_strength(lineups, draws=None):
 # ---------------------------------------------------------------------------
 # 5. Simulating games and seasons
 # ---------------------------------------------------------------------------
-def simulate_games(home, away, skater, goalie, settings, rng, bonus=None):
+def simulate_games(home, away, skater, goalie, settings, rng, bonus=None, goalie_idx=None):
     """
     Every game in a schedule for every simulated season at once.
     home, away: team positions (arrays of length games). skater, goalie: arrays n_sims x teams (WAR per game).
     bonus (notebook 25): a team-level boost in normal goals per game (array of length teams), added to the
     strength edge; None (the default) is notebook 24's model.
+    goalie_idx (notebook 26): (home goalie column, away goalie column) for every game, so each game can have its
+    own starting goalie; goalie is then n_sims x goalie columns (each goalie's WAR for a full game). None (the
+    default) is notebook 24's model: a team's goalie number is its season mix of starter and backup.
     Returns home goals, away goals, went-to-OT and home-win arrays (n_sims x games).
     """
     s = settings
-    edge = s["a_s"] * (skater[:, home] - skater[:, away]) + s["a_g"] * (goalie[:, home] - goalie[:, away])
+    gh, ga = (home, away) if goalie_idx is None else goalie_idx
+    edge = s["a_s"] * (skater[:, home] - skater[:, away]) + s["a_g"] * (goalie[:, gh] - goalie[:, ga])
     if bonus is not None:
         edge = edge + (bonus[home] - bonus[away])[None, :]
     diff = s["home"] + edge

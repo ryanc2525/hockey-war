@@ -1,11 +1,14 @@
 """
-Hockey WAR app: two pages.
+Hockey WAR app: three pages.
 
 - Almanac (app_pages/almanac.py): Baseball Savant-style player cards, 2021-22 to 2025-26. The default page,
   served at the site's root URL, so the live site opens on it exactly as before.
 - Forecast (app_pages/forecast.py): 2026-27 OVR ratings and projections. It needs
   data/forecast_table_2026-27.csv (notebook 20, gitignored), so it only works locally for now; without the
   file it shows a short message and the Almanac keeps working.
+- Simulator (app_pages/simulator.py): plays the rest of the 2026-27 season thousands of times with the trades and
+  sit-outs you pick (src/season.py). It needs notebook 26's bundle (data/simulator_2026-27/, gitignored), so it
+  is local only too, with the same short message when the files are missing.
 
     /opt/anaconda3/envs/hockey/bin/python -m streamlit run app.py
 
@@ -21,5 +24,6 @@ st.set_page_config(page_title="Hockey WAR", layout="centered")
 pages = [
     st.Page("app_pages/almanac.py", title="Almanac", default=True),   # default = shown at the root URL
     st.Page("app_pages/forecast.py", title="Forecast"),
+    st.Page("app_pages/simulator.py", title="Simulator"),
 ]
 st.navigation(pages, position="top").run()     # a menu across the top; runs the page that's open

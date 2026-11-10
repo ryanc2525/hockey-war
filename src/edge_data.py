@@ -577,3 +577,61 @@ def first_nhl_teams(game_log_dir, season_start=None):
                 moves.append({"playerId": pid, "from_team": seen[-1], "to_team": g["teamAbbrev"], "first_game": g["gameDate"]})
                 seen.append(g["teamAbbrev"])
     return pd.Series(first, dtype=object), pd.DataFrame(moves, columns=["playerId", "from_team", "to_team", "first_game"])
+
+
+# ---------------------------------------------------------------------------
+# The current season's full schedule (notebook 26): every game, played or not
+# ---------------------------------------------------------------------------
+def download_season_schedule(teams, raw_dir, season=2026, refresh=False, pause=0.3):
+    """
+    Each team's full regular-season schedule for one season (raw_dir/{TEAM}.json): dates, home/away, and the
+    final score of games already played. refresh=False skips teams already saved (no network call);
+    refresh=True downloads them again to pick up new results.
+    Keep raw_dir separate from the past seasons' folder: schedule_games reads every file in its folder.
+    """
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    todo = [t for t in teams if refresh or not (raw_dir / f"{t}.json").exists()]
+    failed = []
+    for team in todo:
+        data = fetch_url(CLUB_SCHEDULE_URL.format(team=team, season=f"{season}{season + 1}"), f"{team} {season}")
+        if data:
+            (raw_dir / f"{team}.json").write_text(json.dumps(_stamp(data)))
+        else:
+            failed.append(team)
+        time.sleep(pause)
+    print(f"{len(teams) - len(todo)} already saved, {len(todo)} downloaded"
+          + (f"; failed (run again): {failed}" if failed else ""))
+    return failed
+
+
+def season_schedule(raw_dir):
+    """
+    Every regular-season game in the saved files of download_season_schedule, one row per game (each game is in
+    both teams' files): game_id, date, home, away, played (bool), home_goals, away_goals (NaN if not played),
+    last_period (REG, OT or SO; None if not played). Also returns when the files were downloaded (the oldest stamp).
+    """
+    rows, stamps = {}, []
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        data = json.loads(f.read_text())
+        stamps.append(data.get("_downloaded"))
+        for g in data.get("games", []):
+            if g.get("gameType") != 2:
+                continue
+            played = g.get("gameState") in ("OFF", "FINAL")
+            rows[g["id"]] = {"game_id": g["id"], "date": g["gameDate"],
+                             "home": g["homeTeam"]["abbrev"], "away": g["awayTeam"]["abbrev"], "played": played,
+                             "home_goals": g["homeTeam"].get("score") if played else np.nan,
+                             "away_goals": g["awayTeam"].get("score") if played else np.nan,
+                             "last_period": (g.get("gameOutcome") or {}).get("lastPeriodType") if played else None}
+    games = pd.DataFrame(rows.values()).sort_values(["date", "game_id"]).reset_index(drop=True)
+    return games, min(s for s in stamps if s)
+
+
+def standings_detail(data):
+    """One row per team from a saved standings file, with what the playoff race needs: division, conference,
+    games played, wins, OT losses, points, regulation wins (RW) and regulation + overtime wins (ROW)."""
+    rows = [{"team": t["teamAbbrev"]["default"], "division": t["divisionName"], "conference": t["conferenceName"],
+             "gp": t["gamesPlayed"], "wins": t["wins"], "otl": t["otLosses"], "points": t["points"],
+             "rw": t["regulationWins"], "row": t["regulationPlusOtWins"]} for t in data.get("standings", [])]
+    return pd.DataFrame(rows).sort_values(["conference", "division", "team"]).reset_index(drop=True)
