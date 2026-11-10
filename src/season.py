@@ -261,7 +261,7 @@ def rank_seasons(teams, divisions, points, rw, row, rng, seeds=False):
 # 5. One scenario
 # ---------------------------------------------------------------------------
 def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=10000, seed=0, use_bonus=True, chunk=1000,
-                 stat_lines=False, keep_seasons=False):
+                 stat_lines=False, keep_seasons=False, updated=None):
     """
     Simulates the rest of the 2026-27 season n_sims times.
       start_date: None = opening night. A later date (YYYY-MM-DD) locks in every real game before it; only games
@@ -274,6 +274,10 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
         numbers, so team results are exactly the same with or without them. Adds "skaters" and "goalies" tables
         (simulated games only; season_lines adds real stats so far). keep_seasons: also keep every simulated
         season's goals and assists per skater ("season_goals", "season_assists": n_sims x skaters).
+      updated (notebook 28): in-season learning. A dict with "playerId" (array), "z" (players x samples: each
+        player's rest-of-season draws from his updated guesses, inseason.rest_z) and optionally "bonus"
+        ({team: normal goals per game}, the updated team bonus). Those players use these draws instead of their
+        pool; everyone else is unchanged. None (the default) is notebook 26-27's simulator.
     Lineups are built once, after trades and sit-outs, and stay fixed: full health, no in-season changes.
     The same inputs and seed always give the same results.
     Returns a dict: table (one row per team), points (n_sims x teams), lineups, and what was applied.
@@ -293,13 +297,19 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     # Goalie columns: 0..T-1 = each team's starter, T..2T-1 = its backup
     gh = home + T * starts["home_backup"].to_numpy()
     ga = away + T * starts["away_backup"].to_numpy()
-    bonus = np.array([bundle["bonus"].get(t, 0.0) if use_bonus else 0.0 for t in teams])
+    team_bonus = bundle["bonus"] if updated is None or "bonus" not in updated else updated["bonus"]
+    bonus = np.array([team_bonus.get(t, 0.0) if use_bonus else 0.0 for t in teams])
 
     # Each lineup row's place in the league pool (for its random draw) and the size of its draw
     rng_draws = np.random.default_rng([seed, 1])
     rng_games = np.random.default_rng([seed, 2])
     pool_ids, _ = league_z(bundle, 0, np.random.default_rng(0))
     pos = np.searchsorted(pool_ids, lu["playerId"].to_numpy())
+    if updated is not None:                                   # where each updated player sits in the league pool
+        up_ids = np.asarray(updated["playerId"])
+        keep = np.isin(up_ids, pool_ids)
+        up_rows = np.searchsorted(pool_ids, up_ids[keep])
+        up_z = np.asarray(updated["z"])[keep]
     sd = _expected_sd(bundle["fit"], lu["group"], lu["minutes_per_game"] * GAMES_PER_TEAM)
     goalies = lu[lu["dressed"] & (lu["group"] == "G")]
     g_row = {(t, r): i for i, t, r in zip(goalies.index, goalies["team"], goalies["rank"])}
@@ -327,6 +337,8 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     for c0 in range(0, n_sims, chunk):
         n = min(chunk, n_sims - c0)
         _, z = league_z(bundle, n, rng_draws)
+        if updated is not None:                                   # updated players: their in-season draws instead
+            z[up_rows] = up_z[:, (c0 + np.arange(n)) % up_z.shape[1]]
         draws = z[pos] * sd[:, None]                                     # WAR/60 change, every lineup row
         _, sk, _ = S.team_strength(lu, draws)
         war60 = lu["proj_war_60"].to_numpy()[:, None] + draws            # a goalie's WAR for a full game

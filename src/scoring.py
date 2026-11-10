@@ -71,11 +71,13 @@ def rate_table(raw, stat):
     return t
 
 
-def project_rates(table, bios, target, reg_minutes, aging=True):
+def project_rates(table, bios, target, reg_minutes, aging=True, exclude_target=False):
     """Projected count per 60 (goals or assists) going into `target`, for every skater with a season in the 3
-    before it. aging=True: notebook 18's adjust-then-blend with this stat's own aging curve."""
+    before it. aging=True: notebook 18's adjust-then-blend with this stat's own aging curve.
+    exclude_target (notebook 28's backtest): fit the aging curve without the target season, as forecast.backtest
+    does, so a past season's projection never sees that season."""
     version = GROUP_AGING if aging else "none"
-    curve = aging_curve(table, bios)[1] if aging else None
+    curve = aging_curve(table, bios, exclude_season=target if exclude_target else None)[1] if aging else None
     p = project(table, bios, target, WEIGHTS, reg_minutes, {"F": version, "D": version, "G": "none"}, curve)
     return p["proj_war_60"] * GOALS_PER_WIN
 

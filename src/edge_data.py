@@ -730,3 +730,18 @@ def club_stats_table(raw_dir):
                        "gp": p["gamesPlayed"], "wins": p["wins"], "losses": p["losses"], "otl": p["overtimeLosses"],
                        "goals_against": p["goalsAgainst"], "toi": p["timeOnIce"] / 60})
     return pd.DataFrame(sk), pd.DataFrame(gk)
+
+
+def first_games(games, n=40):
+    """
+    Game ids of every game that is within the first n games of at least one of its two teams (notebook 28's
+    backtest needs per-player stats only up to each team's 40th game). games: game_id, home, away, and either
+    date or game ids in schedule order. Returns a sorted list of game ids.
+    """
+    g = games.sort_values([c for c in ["date", "game_id"] if c in games])
+    long = pd.concat([g[["game_id", "home"]].rename(columns={"home": "team"}),
+                      g[["game_id", "away"]].rename(columns={"away": "team"})]).sort_values("game_id", kind="stable")
+    order = {gid: i for i, gid in enumerate(g["game_id"])}
+    long = long.assign(o=long["game_id"].map(order)).sort_values("o", kind="stable")
+    long["n"] = long.groupby("team").cumcount() + 1
+    return sorted(long.loc[long["n"] <= n, "game_id"].unique())

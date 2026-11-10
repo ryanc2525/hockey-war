@@ -35,3 +35,6 @@ data/current_raw/
 data/schedule_raw/
 
 data/simulator_2026-27/
+
+# In-season forecast log (notebook 28; dated projections, private)
+data/forecast_log/

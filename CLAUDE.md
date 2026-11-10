@@ -60,6 +60,18 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   Notebook 27 adds scoring.csv, scoring.json, real_games.csv to the bundle; boxscores in
   data/schedule_raw/2026-27/boxscores/ (only new games download), club totals in data/current_raw/club_stats/
   (cross-check). After a notebook 26 REFRESH, rerun notebook 27.
+- src/inseason.py + notebook 28 (in-season learning, level 1): per-player importance weighting (particle filter).
+  Prior = 3,000 notebook 17 guesses z per player; evidence = goals/assists so far (Poisson at rate x exp(k z) x
+  minutes), goalie GSAx so far (as WAR/60, goalie luck fit), optional skater WAR so far. Two versions: "whole"
+  (z carried) and "split" (talent t = z x sqrt(a) updated, fresh luck b / rest minutes for the remaining games).
+  DEFAULT: whole (picked on training, a near tie; Ryan kept it). Adopted: skater G/A update + team bonus update;
+  goalie update not adopted (hurt team predictions).
+  Team bonus += g / (g + g0) x (points gap per game) / beta, g0 measured. Adopted only if it beats preseason
+  AND pace on test seasons (backtest after 10/20/40 games, 2013-14 to 2017-18 train, 2018-19 + 2021-22 to
+  2025-26 test; goalies 2021-25 only, from the raw shot zip's goalieIdForShot). Skater WAR evidence is never
+  the default (not testable). run_scenario(updated={"playerId", "z", "bonus"}) is add-only. Past boxscores
+  (first 40 games per team) in data/schedule_raw/boxscores_past/; forecast log in data/forecast_log/
+  (updated_projections_<date>.csv, both versions).
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).
