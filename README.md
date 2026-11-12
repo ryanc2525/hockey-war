@@ -1,18 +1,11 @@
-# Hockey WAR: Wins Above Replacement for NHL Skaters
+# Hockey WAR: an NHL Almanac and Forecast
 
-**Status: in progress. Current model: v0.4. Player cards: 2021-22 to 2025-26.**
+Two projects built on public NHL data:
 
-**Live app: [hockey-almanac.streamlit.app](https://hockey-almanac.streamlit.app/).** Search any 2021-22 to 2025-26 skater and see his card.
+- **Almanac:** how much did each skater help his team win this season? A hockey version of baseball's WAR (Wins Above Replacement), shown on Baseball Savant-style player cards for 2021-22 to 2025-26. **Live at [hockey-almanac.streamlit.app](https://hockey-almanac.streamlit.app/).**
+- **Forecast:** projections and EA NHL-style ratings for every player, and a 2026-27 season simulator. It plays the real schedule 10,000 times, lets you make trades or sit players out, and learns from real games every week. It runs on my computer for now, because its inputs are private.
 
-Can one number capture how much a hockey player helped his team win in a season, combining offense, defense, special teams, and discipline? Baseball has WAR (Wins Above Replacement). This project builds a hockey version from public data, then puts it on Baseball Savant-style player cards.
-
-The project has two parts:
-
-| | **Almanac** (now) | **Forecast** (in progress) |
-|---|---|---|
-| Question | How well did he play *this season*? | How will he play *next season*? |
-| Output | Single-season WAR and player cards | Projections with a best case, worst case, and most likely range |
-| Data | One season at a time | Career history, aging curves, regression to the mean |
+**Status:** WAR model v0.4. Forecast Phase 2 is done, and the simulator updates weekly from real games.
 
 ## Player cards
 
@@ -103,13 +96,120 @@ Every player and prospect gets an EA NHL-style overall rating on a **fixed 40-99
 
 ### What it doesn't do well yet
 
-- **Goalies rate too high.** Goalie results barely repeat, so every goalie, backups included, gets pulled toward the league-average goalie, who is well above replacement level. Every goalie who played regularly last season rates between 81 and 95.
+- **Goalies cluster high.** Almost every NHL goalie sits well above replacement, so on the skater scale regular goalies would have a median of 88, with 24 of 72 at 90+. Goalies get their own scale instead: regulars run 72 to 95 (median 80), and Logan Thompson tops it at 95. Notebook 21 checked whether the cluster is a model error. It isn't: goalie call-ups sit as far above replacement as skater call-ups, so the cluster is the job's real value. Goalie results still barely repeat, though, so some goalies rate high on little recent work: Carter Hart is 89 after about 1,020 minutes in 2025-26.
 - **Defense is the hardest part to measure.** Some defensemen who play heavy minutes rate as replacement level, around 70. Coaches clearly value them more than the model does.
 - **Prospect ratings mean "if he plays."** Whether a prospect is actually ready comes later, in the simulator's call-up logic.
 
-**Next:** Phase 2, the season simulator: who plays how much, which prospects get called up, and thousands of simulated seasons.
+**Next:** Phase 2, the season simulator (below).
 
 **Data:** the full projection tables and the downloaded NHL profiles and draft data stay private on my computer. Only the code and notebooks are public.
+
+## Forecast, Phase 2: a 2026-27 season simulator
+
+Phase 2 (notebooks 21-29) turns projections into seasons. The simulator plays all 1,344 games of the real 2026-27 schedule, 10,000 times, with real results locked in and any trades or sit-outs you pick. Then it learns from each week of real games. As in Phase 1, each piece is built on older seasons and checked on seasons it never saw: 2018-19 and 2021-22 to 2025-26.
+
+### Goalie prior (notebook 21)
+Goalies now get their own expected level, like skaters in notebook 18: NHL experience, age, and pre-NHL save %, pulled toward average because it barely repeats. The gain is small, as expected for goalies: error from 0.3043 to 0.3015 GAR per 60 on 370 test goalie-seasons.
+
+### Opening-night rosters and the trades log (notebook 22)
+Every player's team on opening night (Sept 29, 2026), from an NHL API snapshot: active rosters, AHL and ECHL affiliates, and players whose rights a team holds. All 822 NHL-level players have a projection. Two Detroit disputes are entered by hand: Dylan Larkin and Simon Edvinsson (unsigned RFA in Sweden). The opening-night baseline is a "no disputes" world where both play. In-season trades go in a hand-kept log; the simulator applies the ones you pick.
+
+### Lineups (notebook 23)
+Who dresses (12 forwards with 4 natural centers, 6 defensemen, 2 goalies) and how much each plays. A coach score mixes last season's real usage (75%) with the projection (25%), because coaches mostly keep using who they used. On test seasons it gets 82% of each team's real top-6 forwards and 81% of its top-4 defensemen, with minutes off by 1.86 a game for forwards and 2.19 for defensemen.
+
+### The game engine (notebook 24)
+Each game's score comes from the two lineups' projected WAR and home ice, plus a table of what really happens late with the goalie pulled, plus overtime and shootouts. It reproduces how games end: 22.1% of test-season games went past regulation, and 22.1% of simulated ones. Each player also gets a random good or bad season from notebook 17's ranges.
+
+### Calibration and the team bonus (notebook 25)
+On its own, the simulator lost to a simple baseline: last season's points, pulled one-third toward average. The fix is a team bonus, how much each team beat or missed its players' projections last season, keeping 40% of it. That makes the gaps between teams the right size and beats the baseline (see Accuracy).
+
+### The season runner (notebook 26)
+Plays 2026-27 from opening night or any later date:
+- **Locked in:** real results before the start date. They match the NHL standings for all 32 teams.
+- **Applied:** the trades and sit-outs you pick. Lineups stay fixed from the start date.
+- **Goalies:** the backup starts back-to-backs and about 30 of 84 games.
+- **Playoffs:** the NHL format, top 3 in each division plus 2 wild cards per conference.
+- **Speed:** 10,000 seasons take about 5 seconds.
+
+### Stat lines (notebook 27)
+Every simulated season also has goals and assists. A team's goals go to its skaters by projected goals per 60 and minutes, and a player's scoring moves with his random season, so a breakout in WAR is a breakout in points. The goals-per-60 projection has a test error of 0.238 (last season alone: 0.349), and 81.8% of real point totals land in the simulated 80% range. After opening night, a stat line is real stats so far plus the simulated rest.
+
+### In-season learning (notebook 28)
+My idea: a player's random season is a guess, and real games can weigh the guesses. Each player gets 3,000 guesses from his preseason range, and guesses that make his real goals and assists so far more likely get more weight (Bayesian updating with a particle filter). Small samples move a little, big ones more: Cutter Gauthier doesn't move after 2 goals and 3 assists in 6 games, but after 15 goals and 7 assists in 17 his points per 60 rises 24%. Teams get the same idea: results the players don't explain move the team bonus, counting 17% after 10 games and 45% after 40.
+
+### Weekly refresh and the forecast log (notebook 29)
+Once a week, one notebook:
+- **Downloads** only new scores and boxscores.
+- **Checks them:** every game has a boxscore, and goals match the scores. A roster change that isn't in the trades log blocks the save.
+- **Reruns** the update with settings frozen in a file.
+- **Saves a dated forecast** that's never overwritten. Each entry records the code version and the evidence it used, so it can be graded later.
+
+The simulator has a switch, "Use 2026-27 results so far", that plays from the newest entry. It reproduces the logged forecast exactly.
+
+## Accuracy
+
+All errors are on test seasons the models never saw (2018-19 and 2021-22 to 2025-26), as root mean squared error.
+
+### The season simulator (notebook 25)
+
+Final team points, predicted before the season:
+
+| Before the season | Error (points) | Correlation | Gap size (1.00 = right) |
+|---|---|---|---|
+| Every team at league average | 16.40 | - | - |
+| Last season, pulled 1/3 to average | 13.56 | 0.55 | 0.81 |
+| Simulator alone | 14.38 | 0.51 | 1.41 |
+| **Simulator + team bonus (used)** | **13.23** | **0.57** | **1.00** |
+| Simulator 40% + last season 60% | 13.06 | 0.59 | 1.17 |
+
+Said plainly: the blend versions were slightly more accurate (13.02 to 13.07), and the training seasons picked one of them. I used the team bonus anyway. The gap is within noise, and the blend keeps only 40% of a roster move, while trades and sit-outs are what the simulator is for.
+
+### Learning from this season's games (notebook 28)
+
+Rest-of-season error after 10, 20 and 40 games. "Pace" means the rate so far, carried over the rest of the season.
+
+| Players (points) | Preseason | Pace | **Update** |
+|---|---|---|---|
+| After 10 games | 8.0 | 18.5 | **7.9** |
+| After 20 games | 7.2 | 11.8 | **7.0** |
+| After 40 games | 5.5 | 6.8 | **5.3** |
+
+| Teams (points) | Preseason | Pace | **Update** |
+|---|---|---|---|
+| After 10 games | 12.1 | 24.1 | **11.6** |
+| After 20 games | 11.2 | 15.0 | **10.4** |
+| After 40 games | 8.6 | 8.2 | **7.4** |
+
+The rule to adopt it: it had to beat both preseason and pace at every cutoff. It did, and the training seasons (2013-14 to 2017-18) agree. The gain is small early, because 10 games of evidence moves a forecast very little.
+
+### Tested and not adopted
+
+- **The goalie update** (from goals saved above expected so far): goalie predictions barely changed (after 10 games, error 0.0561 with it vs. 0.0559 without). It also made team predictions worse at every cutoff: 12.2 vs. 11.8 points after 10 games, and 7.2 vs. 7.0 after 40 (2021-22 to 2025-26). It's off.
+- **Skater WAR so far as evidence:** past seasons here only have season totals, so WAR after 10, 20 or 40 games can't be rebuilt to test it. It's logged as a second version, never the default.
+- **Separating talent from luck in each guess** (the "split" version): a near tie with the simpler "whole" version. Average points error over the three cutoffs: training 6.176 (whole) vs. 6.181 (split), test 6.713 vs. 6.695. Training picked whole and test leaned split, by less than 0.02 points. I kept the simpler one.
+
+## The Detroit experiment
+
+Detroit's 2026-27 has two disputes. Dylan Larkin asked for a trade in September, missed Detroit's first 2 games, then played 10 (Oct 6 to Oct 26), and was suspended without pay on Oct 29 after saying he would no longer play for the team. Simon Edvinsson is an unsigned RFA in Sweden and hasn't played. The simulator can sit them out and show what it costs.
+
+**What-ifs from opening night** (10,000 seasons, notebook 26). These are hypothetical: in reality Larkin played 10 of Detroit's first 12 games.
+
+| Detroit | Points (change) | 10th to 90th | Playoffs |
+|---|---|---|---|
+| Both play | 91.2 | 74 to 109 | 40.2% |
+| What if Larkin sits | 87.7 (-3.5) | 70 to 106 | 31.2% |
+| What if Edvinsson sits | 90.4 (-0.8) | 72 to 108 | 38.2% |
+| What if both sit | 86.8 (-4.4) | 69 to 105 | 29.1% |
+
+**The real season.** Real results so far are locked in, including Larkin's 10 games. From the start date on, both sit, with trades T1-T6. Detroit was 7-8-3 through Nov 9:
+
+| Forecast | Points (10th to 90th) | Playoffs |
+|---|---|---|
+| From Nov 10: real results so far, preseason ratings (notebook 26) | 84.5 (70 to 100) | 18.0% |
+| From Nov 10: updated with games through Nov 9 (notebook 28) | 80.8 | 10.2% |
+| **From Nov 11: updated, as of evidence through Nov 10 (latest log entry)** | **78.8 (65 to 93)** | **7.1%** |
+
+At 17 points in 19 games, Detroit is doing worse than its players' projections explain. So the update lowers its team bonus, and the forecast drops with it.
 
 ## How the model changed across versions
 
@@ -120,7 +220,7 @@ Every player and prospect gets an EA NHL-style overall rating on a **fixed 40-99
 | **v0.3** | Finishing weight lowered from 0.5 to 0.3 | Rankings barely moved, which pointed to the defense stat as the bigger issue. |
 | **v0.4** | Goals above expected count fully. WAR split into offense, defense, and other. | Team WAR matches team goal differential better than v0.3 (average correlation 0.79 vs. 0.77). Three alternative defense stats were tested; none was meaningfully better. |
 
-## How it works
+## How WAR is calculated
 
 1. **Data:** MoneyPuck season-level skater stats, split into even strength (5v5), power play, and penalty kill. Skating and shot speed, age, and draft position from the NHL's public data.
 2. **Components,** each measured in goals above a replacement-level player in the same minutes:
@@ -156,8 +256,17 @@ Every player and prospect gets an EA NHL-style overall rating on a **fixed 40-99
 | 18 | [`player_specific_prior`](notebooks/18_player_specific_prior.ipynb) | Each skater pulled toward his own expected level |
 | 19 | [`prospects`](notebooks/19_prospects.ipynb) | Draft classes 2019-2026, the pre-NHL rule, and 1,167 prospect projections |
 | 20 | [`ovr_ratings`](notebooks/20_ovr_ratings.ipynb) | An EA-style 40-99 rating on a frozen scale |
+| 21 | [`goalie_prior`](notebooks/21_goalie_prior.ipynb) | Each goalie's own expected level: experience, age and pre-NHL save % |
+| 22 | [`opening_night_rosters`](notebooks/22_opening_night_rosters.ipynb) | 2026-27 opening-night teams and statuses, and the trades log |
+| 23 | [`lineups`](notebooks/23_lineups.ipynb) | Who dresses and how many minutes, backtested against real usage |
+| 24 | [`season_simulator`](notebooks/24_season_simulator.ipynb) | The game engine, and a backtest against real standings |
+| 25 | [`simulator_calibration`](notebooks/25_simulator_calibration.ipynb) | Coefficient fits and the team bonus: picked on training seasons, checked on test |
+| 26 | [`season_runner`](notebooks/26_season_runner.ipynb) | The 2026-27 runner: real schedule, results so far, trades, sit-outs, playoff odds |
+| 27 | [`stat_lines`](notebooks/27_stat_lines.ipynb) | Goals and assists for every simulated season |
+| 28 | [`inseason_update`](notebooks/28_inseason_update.ipynb) | Learning from 2026-27 games, backtested after 10, 20 and 40 games |
+| 29 | [`weekly_refresh`](notebooks/29_weekly_refresh.ipynb) | Weekly downloads, checks, the frozen update and the dated forecast log |
 
-The model and card code live in [`src/`](src/) so every notebook uses the same functions.
+The model and simulator code live in [`src/`](src/) so every notebook uses the same functions.
 
 ## How this was built
 
@@ -173,13 +282,25 @@ Problems found and decisions made along the way:
 - **Penalty kill selection bias** (caught by Claude while testing). The first method rated elite penalty killers below replacement, because top killers take the hardest shifts. It was rebuilt to compare each player against his own team's penalty kill.
 - **Mixing forwards and defensemen inflated the repeatability numbers** (caught by Claude). The tests are now run by position.
 - **Card review** (me). I checked cards for 10 players I know well. That led to adding age and draft position, counting skating bursts per 60 minutes, and showing team-driven stats as context instead of a rating.
+- **The team bonus over the more accurate blend** (my decision). See Accuracy: the gap was within noise, and the blend would have muted every trade and sit-out.
+- **In-season learning** (my idea). Treat each player's random season as a guess and let real games weigh the guesses. When the backtest was a tie between two versions, I kept the simpler one.
+- **Roster changes block the weekly save** (my rule). A trade or waiver claim the log doesn't know about would make the forecast quietly wrong, so the notebook refuses to save until it's logged.
 
 ## Limitations
 
+**Almanac**
 - The defense stat partly measures linemates and opponents, not just the player. Fixing that needs shift-level data.
 - Constants (goals per win, penalty value, faceoff value, assist weight) are approximations.
 - Goalie WAR exists (notebook 14) but isn't on the cards yet.
 - Traded players are listed under their final team. Their stats cover the full season, but the replacement-level and penalty kill comparisons only use the last team.
+
+**Forecast**
+- **Defense is still the hardest part to measure.** Some heavy-minute defensemen rate as replacement level.
+- **Elite scorers project low.** Projections pull everyone toward average, so the best players start too low. McDavid was projected at 4.18 points per 60; after 19 games the update had him at 5.39.
+- **Full health.** Lineups are fixed at the start date, with no injuries or call-ups during a simulated season, so a dressed player plays every game and his totals run a little high.
+- **Goalies don't learn in-season.** The goalie update was tested and rejected (see Accuracy).
+- **Local only.** The simulator needs private data, so the live site shows the Almanac.
+- **Not graded yet.** The weekly forecasts will be scored against real results once there are enough of them.
 
 ## Roadmap
 
@@ -204,31 +325,46 @@ Problems found and decisions made along the way:
 **Forecast**
 - [x] True talent (regression to the mean) and aging curves
 - [x] Phase 1: NHLe, development ranges, player-specific prior, prospects and OVR ratings
-- [ ] Phase 2: the season simulator, then a team builder
+- [x] Phase 2: season simulator, stat lines, in-season learning, weekly forecast log
+- [ ] Level 2: grade the logged forecasts against real results, once there are 4 to 6 weekly entries
+- [ ] Matchup simulator: one game, two lineups
+- [ ] A public simulator on the live site
+- [ ] Make your own trades in the app
+- [ ] Multi-season franchise mode (the frozen OVR scale was built for this)
 
 ## Data
 
-- **[MoneyPuck.com](https://moneypuck.com/data.htm):** season-level skater stats. Raw data is not included in this repo (see [`data/README.md`](data/README.md)).
+- **[MoneyPuck.com](https://moneypuck.com/data.htm):** season-level skater stats and shot data. Raw data is not included in this repo (see [`data/README.md`](data/README.md)).
 - **NHL EDGE and player profiles** (api-web.nhle.com): downloaded by notebook 08 and kept locally.
 - **NHL draft classes** (records.nhl.com) and prospect profiles: downloaded by notebook 19 and kept locally.
+- **2026-27 rosters, schedules, daily scores and boxscores** (api-web.nhle.com): downloaded by notebooks 22 and 26-29 and kept locally, along with the forecast log.
 
-**Credit:** player stats from MoneyPuck.com. Skating, shot speed, and player profiles from the NHL.
+**Credit:** player stats from MoneyPuck.com. Skating, shot speed, player profiles, rosters, schedules and boxscores from the NHL.
 
 ## Tools
 
-Python (pandas, NumPy, matplotlib), Jupyter, VS Code, Git. Built with Claude as a coding partner.
+Python (pandas, NumPy, SciPy, matplotlib), Streamlit, Jupyter, VS Code, Git. Built with Claude as a coding partner.
 
 ## Repo structure
 
 ```
 hockey-war/
-├── archive/      original class version (v1)
-├── data/         MoneyPuck CSVs and downloaded NHL data go here (not tracked)
-├── images/       charts and player cards generated by the notebooks
-├── notebooks/    analysis, one notebook per step or version
-├── src/          WAR model, player card, and NHL data code
+├── app.py            Streamlit app: Almanac and Forecast pages
+├── app_pages/        the pages, including the Forecast page's Simulator tab
+├── app_data/         slim public card table the live app reads
+├── archive/          original class version (v1)
+├── data/             MoneyPuck and NHL data, projections, the forecast log (private, not tracked)
+├── images/           charts and player cards generated by the notebooks
+├── notebooks/        one notebook per step (01-29)
+├── src/              shared code (below)
+├── requirements.txt  what the live app needs
 └── README.md
 ```
+
+`src/`:
+- **WAR and cards:** `war_model.py`, `goalie_war.py`, `win_prob.py`, `player_card.py`, `compare.py`, `edge_data.py` (NHL downloads)
+- **Projections:** `forecast.py`, `nhle.py`, `development.py`, `ratings.py`
+- **Simulator:** `lineups.py`, `simulate.py`, `season.py`, `scoring.py`, `inseason.py`, `refresh.py`
 
 ## Author
 
