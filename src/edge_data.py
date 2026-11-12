@@ -745,3 +745,63 @@ def first_games(games, n=40):
     long = long.assign(o=long["game_id"].map(order)).sort_values("o", kind="stable")
     long["n"] = long.groupby("team").cumcount() + 1
     return sorted(long.loc[long["n"] <= n, "game_id"].unique())
+
+
+# ---------------------------------------------------------------------------
+# Daily scores (notebook 29's weekly refresh): one call per day, an independent check on the boxscores
+# ---------------------------------------------------------------------------
+SCORE_URL = "https://api-web.nhle.com/v1/score/{date}"
+DONE_STATES = ("OFF", "FINAL")
+SKIP_SCHEDULE_STATES = ("PPD", "CNCL", "SUSP")      # postponed, cancelled, suspended: no result that day
+
+
+def download_score_days(dates, raw_dir, pause=0.3):
+    """
+    The NHL's scores for each date (raw_dir/{date}.json), regular-season games only. A day is saved only when
+    every one of its games is final or postponed, so a day with a game still in progress is retried next run.
+    Days already saved are skipped (a finished day never changes). Returns the dates not saved.
+    """
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    todo = [d for d in dates if not (raw_dir / f"{d}.json").exists()]
+    not_saved = []
+    for d in todo:
+        data = fetch_url(SCORE_URL.format(date=d), f"scores {d}")
+        if data is None:
+            not_saved.append(d)
+        else:
+            games = [g for g in data.get("games", []) if g.get("gameType") == 2]
+            done = all(g.get("gameState") in DONE_STATES or g.get("gameScheduleState") in SKIP_SCHEDULE_STATES
+                       for g in games)
+            if done:
+                (raw_dir / f"{d}.json").write_text(json.dumps(_stamp(data)))
+            else:
+                not_saved.append(d)
+        time.sleep(pause)
+    print(f"Score days: {len(dates) - len(todo)} already saved, {len(todo) - len(not_saved)} downloaded"
+          + (f"; not saved yet (games not final): {not_saved}" if not_saved else ""))
+    return not_saved
+
+
+def score_day_results(raw_dir):
+    """
+    One row per regular-season game in the saved score days: game_id, date, home, away, home_goals, away_goals
+    (shootout winner +1, as the standings count it), last_period (REG, OT, SO), final (bool), schedule_state
+    (OK, PPD = postponed, ...). A postponed game appears on its original date with final = False.
+    """
+    rows = {}
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        for g in json.loads(f.read_text()).get("games", []):
+            if g.get("gameType") != 2:
+                continue
+            final = g.get("gameState") in DONE_STATES
+            rows[g["id"]] = {"game_id": g["id"], "date": g["gameDate"], "home": g["homeTeam"]["abbrev"],
+                             "away": g["awayTeam"]["abbrev"],
+                             "home_goals": g["homeTeam"].get("score") if final else np.nan,
+                             "away_goals": g["awayTeam"].get("score") if final else np.nan,
+                             "last_period": (g.get("gameOutcome") or {}).get("lastPeriodType") if final else None,
+                             "final": final, "schedule_state": g.get("gameScheduleState")}
+    cols = ["game_id", "date", "home", "away", "home_goals", "away_goals", "last_period", "final", "schedule_state"]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows.values())[cols].sort_values(["date", "game_id"]).reset_index(drop=True)

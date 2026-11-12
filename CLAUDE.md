@@ -72,6 +72,18 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   the default (not testable). run_scenario(updated={"playerId", "z", "bonus"}) is add-only. Past boxscores
   (first 40 games per team) in data/schedule_raw/boxscores_past/; forecast log in data/forecast_log/
   (updated_projections_<date>.csv, both versions).
+- src/refresh.py + notebook 29 (weekly refresh): run once a week. Downloads only new daily scores
+  (/v1/score/<date> -> data/schedule_raw/2026-27/days/, a day saved only when all its games are final) and new
+  boxscores; checks (every final game has a boxscore, boxscore goals vs. scores, MoneyPuck file dates warn
+  after 7 days, roster drift: a different NHL team BLOCKS the save until logged in trades_2026-27.csv (waiver
+  claim = one-player row, id W1...) or acknowledged in data/drift_ack_2026-27.csv; no-roster call-ups warn only).
+  Reruns notebook 28's update with FROZEN settings (data/forecast_log/settings.json, saved once; g0 and beta at
+  full precision) and the reality scenario (start today, trades dated <= evidence date, sit-outs from
+  data/sit_out_2026-27.csv). Evidence = through yesterday; HOCKEY_TODAY overrides "today" for tests. Postponed
+  games are moved into the rest of the season (84 checked). Saves data/forecast_log/<evidence date>/ (players.csv,
+  teams.csv, metadata.json with commit, uncommitted flag, sha256 of src modules used, backfilled flag; evidence/),
+  all or nothing, never overwritten. Entry 2026-11-09 = notebook 28's file converted (numbers unchanged, rest-of-
+  season and team columns recomputed and listed in metadata). The bundle files are never rewritten.
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).
