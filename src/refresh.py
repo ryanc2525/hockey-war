@@ -4,7 +4,8 @@ frozen settings, run the real-world scenario, and save a dated forecast entry th
 
 Thin functions only. The model lives in inseason.py (the update), season.py (the simulator) and scoring.py
 (stat lines); this file moves notebook 28's glue (its update26 and team bonus cells) into functions, adds the
-checks, and saves the entries. Nothing here reruns a backtest.
+checks, and saves the entries. Nothing here reruns a backtest. Section 7 builds the Simulator tab's update cache
+(an entry's rest-of-season draws and team bonus, checked against the entry) and loads it for the app.
 
     import refresh as R
     settings = R.load_settings(DATA / "forecast_log" / "settings.json")
@@ -213,9 +214,12 @@ def player_table(B, lineup, start, war_file, goalie_file=None, goalie_repl_gap=N
     mpg = P["minutes_per_game"].fillna(0.0)
     P["toi_season"] = np.maximum(mpg * SE.GAMES_PER_TEAM, P["toi"]).clip(lower=1.0)
     P["toi_rest"] = (mpg * P["team_now"].map(left).fillna(0)).clip(lower=1.0)
-    war = run_season(war_file).set_index("playerId")
-    P["war60_so_far"] = (P["playerId"].map(war["war"]) / P["playerId"].map(war["all_toi"]) * 60).where(P["group"] != "G")
-    P["war_min"] = P["playerId"].map(war["all_toi"])
+    if war_file is None:                     # no MoneyPuck file (the update cache): no WAR so far, the default update doesn't use it
+        P["war60_so_far"], P["war_min"] = np.nan, np.nan
+    else:
+        war = run_season(war_file).set_index("playerId")
+        P["war60_so_far"] = (P["playerId"].map(war["war"]) / P["playerId"].map(war["all_toi"]) * 60).where(P["group"] != "G")
+        P["war_min"] = P["playerId"].map(war["all_toi"])
     P["gwar60_so_far"] = np.nan
     if goalie_file is not None and Path(goalie_file).exists():
         g = load_goalies(pd.read_csv(goalie_file)).groupby("playerId").agg(gsax=("gsax", "sum"), gtoi=("toi", "sum"))
@@ -386,3 +390,143 @@ def entries(root):
 def load_entry(root, through):
     d = Path(root) / through
     return pd.read_csv(d / "players.csv"), pd.read_csv(d / "teams.csv"), json.loads((d / "metadata.json").read_text())
+
+
+# ---------------------------------------------------------------------------
+# 7. The update cache for the Simulator tab (data/simulator_2026-27/updated/<evidence date>/)
+# ---------------------------------------------------------------------------
+# An entry saves averages; the simulator needs every player's rest-of-season draws and the updated team bonus.
+# build_update_cache rebuilds them from an entry's saved evidence with the frozen settings, checks that they
+# reproduce the entry, and saves them next to the bundle. The forecast log is only read, never written.
+CACHE_FILES = ["draws.npz", "bonus.json", "meta.json", "evidence/real_games.csv", "evidence/results.csv"]
+BUNDLE_FILES = ["players.csv", "schedule.csv", "settings.json", "scoring.csv", "scoring.json"]
+EXACT = {"float_precision": "round_trip"}        # read numbers back exactly as they were written
+PLAYER_CHECK = ["gp", "G", "A", "minutes_so_far", "pre_war60", "pre_g60", "pre_a60", "upd_war60", "upd_g60", "upd_a60",
+                "upd_ess", "team_bonus_pre", "team_bonus_upd"] + [c for c in REST_COLS if c != "rest_p_war_version"]
+TEAM_CHECK = ["team_bonus_pre", "team_bonus_upd", "real_gp", "real_points", "points", "points_p10", "points_p90",
+              "playoff_pct", "division_pct", "presidents_pct"]
+
+
+def bundle_fingerprint(bundle_dir):
+    """sha256 of the bundle files a cache was checked against (if notebook 26 or 27 rewrites them, the cache is stale)."""
+    d = Path(bundle_dir)
+    return {f: hashlib.sha256((d / f).read_bytes()).hexdigest() for f in BUNDLE_FILES}
+
+
+def read_evidence(folder):
+    """An entry's (or a cache's) evidence: the daily results and the real player-games, numbers read exactly."""
+    ev = Path(folder) / "evidence"
+    return pd.read_csv(ev / "results.csv", **EXACT), pd.read_csv(ev / "real_games.csv", **EXACT)
+
+
+def build_update_cache(entry_dir, bundle_dir, trades_path, settings, fit, out_root):
+    """
+    Rebuild an entry's update from its saved evidence (the same steps as notebook 29's run_week, default version
+    only) and save what run_scenario(updated=...) needs to out_root/<evidence date>/.
+    Checks first: players.csv to 1e-9 and teams.csv exactly, on every column the default version makes (the skater
+    WAR version needs the MoneyPuck file, which the cache doesn't use). If a check fails, nothing is written.
+    Refuses if the cache folder exists. Saves all or nothing (temporary folder, then one rename).
+    Returns the folder, or None if nothing was written.
+    """
+    entry_dir, out_root = Path(entry_dir), Path(out_root)
+    meta = json.loads((entry_dir / "metadata.json").read_text())
+    through, start = meta["evidence_through"], meta["start"]
+    final = out_root / through
+    if final.exists():
+        print(f"The update cache for {through} already exists ({final}); nothing was written.")
+        return None
+    if meta["settings"] != settings:
+        raise ValueError(f"the entry {through} was made with other settings than the frozen ones")
+    if settings["version"] != "whole":
+        raise NotImplementedError("the cache reuses the draws for any lineup, which is exact only for the 'whole' version")
+    clock = time.time()
+    B = SE.load_bundle(bundle_dir, trades_path)
+    results, real_games = read_evidence(entry_dir)
+    Bn = with_evidence(B, results, real_games, through, start)
+    trades = list(meta["trades_applied"])
+    sit = [int(s["playerId"]) for s in meta["sit_out"]]
+    lineup = reality_lineup(Bn, trades, sit)
+    P, left = player_table(Bn, lineup, start, None)
+    U, Z = player_update(P, settings, fit, B["pools"])
+    bonus, runs = team_bonus_update(Bn, B, start, trades, sit, P, Z, left, settings)
+    updated = {"playerId": P["playerId"].to_numpy(), "z": Z, "bonus": bonus.to_dict()}
+    run = SE.run_scenario(Bn, start_date=start, trade_ids=trades, sit_out=sit, n_sims=meta["n_sims"], seed=meta["seed"],
+                          stat_lines=True, updated=updated)
+    lines, _ = SE.season_lines(run, Bn)
+    players = player_entry(P, U, U, runs["bonus0"], bonus, through, settings, lines, lines).set_index("playerId")
+    teams = team_entry(run, run, runs["bonus0"], bonus).set_index("team")
+
+    # The check: the rebuilt numbers must be the entry's
+    old_p = pd.read_csv(entry_dir / "players.csv", **EXACT).set_index("playerId")
+    old_t = pd.read_csv(entry_dir / "teams.csv", **EXACT).set_index("team")
+    problems = []
+    if set(players.index) != set(old_p.index) or set(teams.index) != set(old_t.index):
+        problems.append("different players or teams")
+    p_gaps = {}
+    for c in PLAYER_CHECK:
+        new, old = players[c].reindex(old_p.index), old_p[c]
+        if not (new.isna() == old.isna()).all():
+            problems.append(f"players.csv {c}: blanks differ")
+        p_gaps[c] = float((new - old).abs().fillna(0).max())
+    if max(p_gaps.values()) > 1e-9:
+        problems.append(f"players.csv off by up to {max(p_gaps.values()):.1e} (rule: 1e-9): "
+                        + ", ".join(c for c, g in p_gaps.items() if g > 1e-9))
+    t_off = [c for c in TEAM_CHECK if not (teams[c].reindex(old_t.index).to_numpy() == old_t[c].to_numpy()).all()]
+    if t_off:
+        problems.append("teams.csv not exactly equal: " + ", ".join(
+            f"{c} (up to {float((teams[c].reindex(old_t.index) - old_t[c]).abs().max()):.1e})" for c in t_off))
+    print(f"Rebuilt the {through} update in {time.time() - clock:.0f} s. players.csv: largest gap {max(p_gaps.values()):.1e} "
+          f"over {len(PLAYER_CHECK)} columns; teams.csv: {len(TEAM_CHECK) - len(t_off)} of {len(TEAM_CHECK)} columns exactly equal.")
+    if problems:
+        print("NOT saved, the rebuild doesn't reproduce the entry: " + "; ".join(problems))
+        return None
+
+    out_root.mkdir(parents=True, exist_ok=True)
+    tmp = out_root / f".tmp_{through}_{os.getpid()}"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    (tmp / "evidence").mkdir(parents=True)
+    np.savez_compressed(tmp / "draws.npz", playerId=updated["playerId"], z=Z)
+    (tmp / "bonus.json").write_text(json.dumps({t: float(v) for t, v in updated["bonus"].items()}, indent=1))
+    for name in ["real_games.csv", "results.csv"]:
+        shutil.copyfile(entry_dir / "evidence" / name, tmp / "evidence" / name)
+    info = {"evidence_through": through, "start": start, "entry": str(entry_dir.resolve()), "version": settings["version"],
+            "trades_applied": trades, "sit_out": sit, "seed": meta["seed"], "n_sims": meta["n_sims"],
+            "draws": {"players": int(Z.shape[0]), "per_player": int(Z.shape[1]), "dtype": str(Z.dtype)},
+            "built": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds": round(time.time() - clock, 1),
+            "checks": {"players_columns": PLAYER_CHECK, "players_largest_gap": max(p_gaps.values()),
+                       "teams_columns_exact": TEAM_CHECK},
+            "bundle_sha256": bundle_fingerprint(bundle_dir), **code_fingerprint(Path(__file__).resolve().parent.parent)}
+    (tmp / "meta.json").write_text(json.dumps(info, indent=1, default=str))
+    os.rename(tmp, final)
+    print(f"Saved the update cache {final}")
+    return final
+
+
+def newest_cache(root):
+    """The newest complete cache folder under root (None if there's none)."""
+    root = Path(root)
+    if not root.exists():
+        return None
+    done = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".") and all((p / f).exists() for f in CACHE_FILES)]
+    return max(done, key=lambda p: p.name) if done else None
+
+
+def load_update_cache(cache_dir, bundle, bundle_dir):
+    """
+    What the Simulator tab needs to play from a cache: the bundle with the cache's real results (the same
+    with_evidence as notebook 29), run_scenario's updated={"playerId", "z", "bonus"}, and the cache's meta.
+    Raises ValueError if the bundle changed since the cache was built, or the version isn't "whole".
+    """
+    d = Path(cache_dir)
+    meta = json.loads((d / "meta.json").read_text())
+    if meta["bundle_sha256"] != bundle_fingerprint(bundle_dir):
+        raise ValueError("the simulator bundle changed since this cache was built; rebuild it with notebook 29's last cell")
+    if meta["version"] != "whole":
+        raise ValueError(f"the cache was built with the '{meta['version']}' version; its draws depend on minutes")
+    results, real_games = read_evidence(d)
+    Bn = with_evidence(bundle, results, real_games, meta["evidence_through"], meta["start"])
+    with np.load(d / "draws.npz") as f:
+        updated = {"playerId": f["playerId"], "z": f["z"]}
+    updated["bonus"] = json.loads((d / "bonus.json").read_text())
+    return Bn, updated, meta

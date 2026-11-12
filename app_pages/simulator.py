@@ -10,6 +10,11 @@ It reads the bundle notebooks 26 and 27 save (data/simulator_2026-27/) and the h
 (data/trades_2026-27.csv). data/ is gitignored, so the live site doesn't have them: then this tab shows a short
 message, and the rest of the app keeps working. Nothing here recomputes WAR or calls the NHL.
 
+"Use 2026-27 results so far": notebook 29's last cell saves an update cache per weekly entry
+(data/simulator_2026-27/updated/<evidence date>/: real results through that date, every player's updated
+rest-of-season draws and the updated team bonus). The newest one is offered as a switch, for start dates on or
+after its start date. Without a cache the switch is hidden.
+
 To test the missing-files message, point it somewhere empty:
     HOCKEY_SIMULATOR_DIR=/nonexistent /opt/anaconda3/envs/hockey/bin/python -m streamlit run app.py
 """
@@ -25,6 +30,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent            # the project folder (this file is in app_pages/)
 BUNDLE_DIR = Path(os.environ.get("HOCKEY_SIMULATOR_DIR", ROOT / "data" / "simulator_2026-27"))
+UPDATED_DIR = BUNDLE_DIR / "updated"                      # notebook 29's update caches, one folder per entry
 TRADES_PATH = ROOT / "data" / "trades_2026-27.csv"
 NEEDED = [BUNDLE_DIR / f for f in ["players.csv", "schedule.csv", "settings.json", "scoring.csv", "scoring.json",
                                    "real_games.csv"]] + [TRADES_PATH]
@@ -56,14 +62,44 @@ def load(stamp):
     return _season().load_bundle(BUNDLE_DIR, TRADES_PATH)
 
 
+def _refresh():
+    """refresh.py (notebook 29's functions), imported only when an update cache is there."""
+    _season()                                             # puts src/ on the path
+    import refresh
+    return refresh
+
+
+def latest_cache():
+    """The newest complete update cache folder, or None."""
+    if not UPDATED_DIR.exists():
+        return None
+    return _refresh().newest_cache(UPDATED_DIR)
+
+
+@st.cache_resource
+def load_update(stamp, cache_dir, cache_stamp):
+    """Read one update cache once: (the bundle with the cache's real results, updated draws and bonus, meta).
+    Returns an error message instead if the cache doesn't fit the bundle (notebook 26 or 27 was rerun since)."""
+    try:
+        return _refresh().load_update_cache(cache_dir, load(stamp), BUNDLE_DIR)
+    except ValueError as e:
+        return str(e)
+
+
 @st.cache_data(show_spinner=False, max_entries=30)
-def run(stamp, start_date, trade_ids, sit_out, n_sims, seed, stat_lines=True):
+def run(stamp, start_date, trade_ids, sit_out, n_sims, seed, stat_lines=True, cache=None, use_update=False):
     """One scenario, cached by its inputs: the same inputs come back instantly the second time.
+      cache: None = the bundle's real results (notebooks 26-27), or (folder, stamp) of an update cache whose
+        real results to use; use_update: also its updated player draws and team bonus.
     Returns the team table, the season lines (real so far + simulated), seeds and the lineups."""
     SE = _season()
-    bundle = load(stamp)
+    if cache is None:
+        bundle, updated = load(stamp), None
+    else:
+        bundle, upd, _ = load_update(stamp, *cache)
+        updated = upd if use_update else None
     res = SE.run_scenario(bundle, start_date=start_date, trade_ids=list(trade_ids), sit_out=list(sit_out),
-                          n_sims=n_sims, seed=seed, stat_lines=stat_lines)
+                          n_sims=n_sims, seed=seed, stat_lines=stat_lines, updated=updated)
     out = {k: res[k] for k in ["table", "lineups", "teams", "start_date", "trades", "sit_out", "n_sims", "seed",
                                "games_simulated", "games_locked", "seconds"]}
     out["seeds"] = res["seeds"][0] if n_sims == 1 else None
@@ -98,8 +134,25 @@ def show_simulator():
     players, trades = B["players"], B["trades"]
     last_day = date.fromisoformat(B["schedule_downloaded"][:10])
 
-    st.caption(f"The real 2026-27 schedule, with real results and real stats from every game before {last_day} "
+    # notebook 29's newest update cache, if there is one that fits this bundle
+    cache, cache_meta, cache_note = None, None, "Run notebook 29 to use 2026-27 results so far."
+    cache_dir = latest_cache()
+    if cache_dir is not None:
+        cache = (str(cache_dir), (cache_dir / "draws.npz").stat().st_mtime)
+        loaded = load_update(stamp, *cache)
+        if isinstance(loaded, str):
+            cache, cache_note = None, f"The update cache {cache_dir.name} can't be used ({loaded})."
+        else:
+            cache_meta = loaded[2]
+    if cache_meta:
+        through = date.fromisoformat(cache_meta["evidence_through"])
+        latest_start = date.fromisoformat(cache_meta["start"])
+
+    caption = (f"The real 2026-27 schedule, with real results and real stats from every game before {last_day} "
                "(when notebooks 26-27 last downloaded them).")
+    if cache_meta:
+        caption += f" With \"Use 2026-27 results so far\": every game through {through} (notebook 29's latest weekly entry)."
+    st.caption(caption)
     with st.expander("How it works"):
         st.markdown(
             """
@@ -114,15 +167,45 @@ def show_simulator():
   against of the games they start. After opening night, lines are **real stats so far + the simulated rest**.
   No save % yet (the simulator has no shots).
 - **Results are a range, not a prediction.** One season is one possible season; 10,000 show the range.
+- **"Use 2026-27 results so far"** (after notebook 29): plays from the newest weekly entry, with real results
+  through its date, each player's updated rest-of-season draws (notebook 28's update from his goals and assists
+  so far) and the updated team bonuses. Only for a start date on or after that entry's start: from an earlier
+  date, the update would already know games being simulated. Sit-outs and trades change who dresses, not a
+  player's draws (in the adopted version his update doesn't depend on his minutes). The team bonuses stay the
+  entry's, because they measure the real results so far. **Off** on that date: the same real results with
+  preseason ratings, so the two show what the update changes.
 """
         )
 
     # ---- Controls ----
+    max_day = max(last_day, latest_start) if cache_meta else last_day
+    if "sim_start" not in st.session_state or st.session_state["sim_start"] > max_day:
+        st.session_state["sim_start"] = OPENING_NIGHT
+
+    def from_latest():
+        st.session_state["sim_start"] = latest_start
+        st.session_state["sim_go"] = True              # run right away
+
     c1, c2 = st.columns(2)
-    start = c1.date_input("Start date", value=OPENING_NIGHT, min_value=OPENING_NIGHT, max_value=last_day, key="sim_start",
+    start = c1.date_input("Start date", min_value=OPENING_NIGHT, max_value=max_day, key="sim_start",
                           help="Real results before this date are locked in; the rest of the season is simulated.")
     mode = c2.radio("Mode", MODES, horizontal=True, key="sim_mode")
     start_str = start.isoformat()
+    use_update = False
+    if cache_meta:
+        u1, u2 = st.columns([3, 1])
+        label = f"Use 2026-27 results so far (updated through {through:%b} {through.day})"
+        if start >= latest_start:
+            use_update = u1.toggle(label, value=True, key=f"sim_use_{start_str}")      # on by default, per date
+        else:
+            u1.toggle(label, value=False, disabled=True, key="sim_use_disabled")
+            u1.caption(f"Off for start dates before {latest_start:%b} {latest_start.day}: "
+                       "the update has already seen games this run would simulate.")
+        u2.button("Start from latest results", on_click=from_latest, key="sim_latest")
+    else:
+        st.caption(cache_note)
+    # Real results: the bundle's up to its download day (exactly as before); after it, only the cache has them
+    run_cache = cache if cache_meta and (use_update or start > last_day) else None
     labels = {tid: trade_label(t) for tid, t in trades.groupby("trade_id", sort=True)}
     chosen = st.multiselect("Trades in effect", list(labels), default=SE.default_trades(trades, start_str),
                             format_func=labels.get, key=f"sim_trades_{start_str}",   # resets when the date changes
@@ -144,22 +227,30 @@ def show_simulator():
     if mode == MODES[0]:
         c5.button("Simulate again", on_click=again, key="sim_again")
     n_sims = 1 if mode == MODES[0] else 10000
-    inputs = (start_str, tuple(sorted(chosen)), tuple(sorted(sit)), n_sims, int(st.session_state["sim_seed"]))
+    inputs = (start_str, tuple(sorted(chosen)), tuple(sorted(sit)), n_sims, int(st.session_state["sim_seed"]),
+              run_cache, use_update)
     if go or st.session_state.pop("sim_go", False) or "sim_inputs" not in st.session_state \
             or st.session_state["sim_inputs"][3] != n_sims:
         st.session_state["sim_inputs"] = inputs     # first visit or a new mode: run right away
 
     shown = st.session_state["sim_inputs"]
     with st.spinner("Simulating..." if shown[3] == 1 else "Simulating 10,000 seasons (about 10 seconds the first time)..."):
-        res = run(stamp, *shown)
+        res = run(stamp, *shown[:5], cache=shown[5], use_update=shown[6])
     if shown != inputs:
         st.warning("The controls have changed since this run. Press **Run** to update the results.")
     names = players.set_index("playerId")["name"]
     real_part = res["games_locked"] > 0
+    if shown[5] is None:
+        ratings = "preseason"
+    else:
+        entry = Path(shown[5][0]).name                     # the cache folder = its evidence date
+        ratings = (f"updated through {entry} (notebook 29)" if shown[6]
+                   else f"preseason (real results through {entry} from notebook 29)")
     st.markdown(
         f"**Showing:** from {res['start_date']} ({res['games_locked']} real games locked in, {res['games_simulated']:,} "
         f"simulated), {'one season' if res['n_sims'] == 1 else f'{res['n_sims']:,} seasons'}, seed {res['seed']}. "
-        f"Trades: {', '.join(res['trades']) or 'none'}. Sitting out: {', '.join(names[p] for p in res['sit_out']) or 'nobody'}.")
+        f"Trades: {', '.join(res['trades']) or 'none'}. Sitting out: {', '.join(names[p] for p in res['sit_out']) or 'nobody'}. "
+        f"Ratings: {ratings}.")
     if res["n_sims"] == 1:
         show_one_season(res, real_part)
     else:

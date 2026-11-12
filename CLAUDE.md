@@ -84,10 +84,20 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   teams.csv, metadata.json with commit, uncommitted flag, sha256 of src modules used, backfilled flag; evidence/),
   all or nothing, never overwritten. Entry 2026-11-09 = notebook 28's file converted (numbers unchanged, rest-of-
   season and team columns recomputed and listed in metadata). The bundle files are never rewritten.
+- Update cache (notebook 29's last cell, refresh.build_update_cache): per entry, data/simulator_2026-27/updated/
+  <evidence date>/ (draws.npz = every pool player's 4,000 rest-of-season draws, float64 compressed; bonus.json;
+  evidence/ copied from the entry; meta.json with the bundle sha256). Rebuilt from the entry's evidence with the
+  frozen settings and saved only if it reproduces players.csv to 1e-9 and teams.csv exactly (default-version
+  columns; the skater WAR version isn't cached). Never writes in data/forecast_log/. "whole" draws don't depend
+  on minutes, so the app reuses them for any lineup; the team bonus stays the entry's. 2026-11-10 built.
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).
   HOCKEY_SIMULATOR_DIR overrides the bundle path. Streamlit doesn't reload this module on edit: restart the app.
+  Switch "Use 2026-27 results so far" (newest update cache, refresh.load_update_cache; refused if the bundle
+  changed): enabled only for start >= the entry's start (date max = that start), default ON; ON = entry's real
+  results + updated draws + updated bonus. OFF at dates <= the bundle's download day = the old code path exactly;
+  OFF after it = the entry's real results with preseason ratings. No cache: switch hidden with a note.
 - app_data/cards.csv: slim public card table (committed), one row per player per season, written
   by notebook 10 via player_card.export_app_table(by_season=True). Only columns the card draws;
   no raw MoneyPuck situation stats. (Notebook 09 wrote the earlier 2025-26-only version.)
