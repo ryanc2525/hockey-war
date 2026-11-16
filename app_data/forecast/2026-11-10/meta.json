@@ -1,0 +1,35 @@
+{
+ "evidence_through": "2026-11-10",
+ "run_date": "2026-11-11",
+ "backfilled": false,
+ "sit_out": [
+  {
+   "playerId": 8477946,
+   "name": "Dylan Larkin"
+  },
+  {
+   "playerId": 8482762,
+   "name": "Simon Edvinsson"
+  }
+ ],
+ "trades_applied": [
+  "T1",
+  "T2",
+  "T3",
+  "T4",
+  "T5",
+  "T6"
+ ],
+ "settings": {
+  "version": "whole",
+  "skater_update": true,
+  "team_bonus_update": true,
+  "goalie_update": false,
+  "seasons_simulated": 10000,
+  "seed": 28,
+  "guesses_per_player": 3000
+ },
+ "git_commit": "1510414ede22b678abc4e18ea26a6074212fbb57",
+ "exported": "2026-11-16",
+ "ovr_note": "OVR is the preseason rating from notebook 20; it doesn't change week to week. team_bonus is in normal goals per game."
+}

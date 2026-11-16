@@ -90,6 +90,13 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   frozen settings and saved only if it reproduces players.csv to 1e-9 and teams.csv exactly (default-version
   columns; the skater WAR version isn't cached). Never writes in data/forecast_log/. "whole" draws don't depend
   on minutes, so the app reuses them for any lineup; the team bonus stays the entry's. 2026-11-10 built.
+- Public Forecast snapshot (notebook 29's cell 21, src/public_forecast.py): per entry, app_data/forecast/
+  <evidence date>/ (players.csv, teams.csv, meta.json; TRACKED, about 195 KB a week). Built only from the log
+  entry + data/forecast_table_2026-27.csv (preseason OVR, position, age); never changes the entry. gp/g/a come
+  from the entry's evidence/real_games.csv (includes goalies; equal to the entry for skaters). season_g/a = real
+  + rest (10th/90th shift by the real count). Teams' preseason vs. updated = team_bonus_pre/upd (goals per
+  game). Checked in memory before writing: allowlist + raw-stat-word guard, and every number equal to the entry
+  (copied columns bit for bit, built columns to their formula). Never overwritten. 2026-11-09, -10, -15 exported.
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).
@@ -118,6 +125,18 @@ plain language, one step at a time.
 1. Read README.md and the relevant src/ files first, and explain the plan before writing code.
 2. Ask before installing anything.
 3. Never delete files, never run git push, never commit. Ryan reviews and commits in VS Code.
-4. Never publish or copy raw MoneyPuck data anywhere outside this folder. data/ stays private
-   (gitignored); only the slim app_data/ table is approved for the public repo. Ryan allows
-   private, temporary analysis copies in Claude's cloud workspace (never published).
+4. Never publish raw MoneyPuck data (season or shot-level columns such as xG, shots, Corsi/Fenwick,
+   on-ice stats, TOI splits) or anything in data/; data/ stays private (gitignored). Public (tracked)
+   data is only app_data/: the slim card table (cards.csv, shot_grid.csv, shot_totals.csv, as before)
+   and the Forecast snapshot app_data/forecast/<evidence date>/, built by src/public_forecast.py
+   (export_public), whose check fails on any other column. Ryan's decision: derived Forecast outputs
+   (projections, OVR, team odds) and real NHL game stats may be public. Forecast allowlist:
+   - players.csv: playerId, name, team, position, age, ovr, gp, g, a, rest_g, rest_g_p10, rest_g_p90,
+     rest_a, rest_a_p10, rest_a_p90, rest_p, rest_p_p10, rest_p_p90, season_g, season_g_p10,
+     season_g_p90, season_a, season_a_p10, season_a_p90, season_p, season_p_p10, season_p_p90,
+     pre_p60, upd_p60
+   - teams.csv: team, real_gp, real_points, points, points_p10, points_p90, playoff_pct, division_pct,
+     presidents_pct, team_bonus_pre, team_bonus_upd
+   - meta.json: evidence_through, run_date, backfilled, sit_out, trades_applied, settings, git_commit,
+     exported, ovr_note
+   Ryan allows private, temporary analysis copies in Claude's cloud workspace (never published).
