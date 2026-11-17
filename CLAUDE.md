@@ -97,6 +97,19 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   + rest (10th/90th shift by the real count). Teams' preseason vs. updated = team_bonus_pre/upd (goals per
   game). Checked in memory before writing: allowlist + raw-stat-word guard, and every number equal to the entry
   (copied columns bit for bit, built columns to their formula). Never overwritten. 2026-11-09, -10, -15 exported.
+- src/franchise.py + notebook 30 (franchise-mode engine, no UI yet): load_inputs (the simulator switch's rules),
+  lineup overrides (table team, slot, playerId; slots F1-F12, D1-D6, G1, G2; slot number = rank; a team lists all
+  20; optional goalie_share {team: share} rebuilds that team's backup games), game_range (next N games for a team,
+  an end date, or the rest of the season; every team plays the window; seeds/odds only for a full season),
+  story (one seeded season: game log, record, standings, lines two ways = range only and season to date via
+  season_lines, draws table for notebook 31) and projection (10,000). Minutes rule "moved" (Ryan's, default):
+  players whose slot changed get 100% slot minutes, others keep the 75/25 blend, then F/D totals rescaled; "blend"
+  and "slot" kept for comparison. No chemistry. Errors block (slots, duplicates, not in the team's pool, goalie <->
+  skater, share outside 0-1); warnings don't (< 4 centers, out of position, call-ups). Add-only options:
+  run_scenario(lineups=, keep_games=, keep_z=, update_shift=) and assign_minutes(own_weight_by_player=); defaults
+  checked bit for bit against the committed versions. A story passes its seed as update_shift, and so does the
+  Simulator tab for one season with the update on (so "Simulate again" re-rolls updated players; 10,000 unchanged). Reserved path for saved overrides:
+  data/franchise_lineups_2026-27.csv (ignored; a data/ subfolder would not be). Notebook 30 writes nothing.
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).

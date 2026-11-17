@@ -261,7 +261,8 @@ def rank_seasons(teams, divisions, points, rw, row, rng, seeds=False):
 # 5. One scenario
 # ---------------------------------------------------------------------------
 def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=10000, seed=0, use_bonus=True, chunk=1000,
-                 stat_lines=False, keep_seasons=False, updated=None):
+                 stat_lines=False, keep_seasons=False, updated=None, lineups=None, keep_games=False, keep_z=False,
+                 update_shift=0):
     """
     Simulates the rest of the 2026-27 season n_sims times.
       start_date: None = opening night. A later date (YYYY-MM-DD) locks in every real game before it; only games
@@ -278,6 +279,15 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
         player's rest-of-season draws from his updated guesses, inseason.rest_z) and optionally "bonus"
         ({team: normal goals per game}, the updated team bonus). Those players use these draws instead of their
         pool; everyone else is unchanged. None (the default) is notebook 26-27's simulator.
+    Franchise mode (notebook 30; every default changes nothing):
+      lineups: a ready-made lineup table (franchise.apply_overrides) used instead of building one from trades and
+        sit-outs (which are still recorded in the result).
+      keep_games: also return every simulated game ("games": schedule rows, home/away goals as the standings count
+        them, ot, so, and each side's starting goalie). Meant for a few seasons, not 10,000.
+      keep_z: also return every pool player's draw ("z": n_sims x players, "z_ids": their playerIds) and each lineup
+        row's draw size ("draw_size").
+      update_shift: with `updated`, season k uses column (k + update_shift) of a player's updated draws. 0 = before;
+        a one-season story passes its seed, so a new seed is a new draw for updated players too.
     Lineups are built once, after trades and sit-outs, and stay fixed: full health, no in-season changes.
     The same inputs and seed always give the same results.
     Returns a dict: table (one row per team), points (n_sims x teams), lineups, and what was applied.
@@ -285,7 +295,7 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     clock = time.time()
     start = start_date or OPENING_NIGHT
     trades = default_trades(bundle["trades"], start) if trade_ids is None else sorted(trade_ids)
-    lu = scenario_lineups(bundle, trades, sit_out)
+    lu = scenario_lineups(bundle, trades, sit_out) if lineups is None else lineups
     sched = bundle["schedule"]
     sim = (sched["date"] >= start).to_numpy()
     games = sched[sim]
@@ -317,6 +327,8 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     backup_rows = np.array([g_row.get((t, 2), g_row[(t, 1)]) for t in teams])   # no backup: the starter plays
 
     tallies = {k: np.zeros((n_sims, T)) for k in ["points", "wins", "otl", "rw", "row", "gd"]}
+    kept = {k: [] for k in ["home_goals", "away_goals", "ot", "so"]} if keep_games else None
+    kept_z = [] if keep_z else None
     if stat_lines:
         # Each dressed skater's team, his place on it (0-17), his rates, minutes and draw pool
         ss = bundle["stat_settings"]
@@ -338,7 +350,9 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
         n = min(chunk, n_sims - c0)
         _, z = league_z(bundle, n, rng_draws)
         if updated is not None:                                   # updated players: their in-season draws instead
-            z[up_rows] = up_z[:, (c0 + np.arange(n)) % up_z.shape[1]]
+            z[up_rows] = up_z[:, (c0 + update_shift + np.arange(n)) % up_z.shape[1]]
+        if keep_z:
+            kept_z.append(z.T.copy())
         draws = z[pos] * sd[:, None]                                     # WAR/60 change, every lineup row
         _, sk, _ = S.team_strength(lu, draws)
         war60 = lu["proj_war_60"].to_numpy()[:, None] + draws            # a goalie's WAR for a full game
@@ -348,6 +362,9 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
         hg, ag, ot, hw = out[:4]
         so = ot & (rng_games.random(ot.shape) < bundle["so_share"])     # which OT/SO games were shootouts
         rows = np.repeat(np.arange(n)[:, None], len(home), axis=1)
+        if keep_games:
+            for k, v in [("home_goals", hg), ("away_goals", ag), ("ot", ot), ("so", so)]:
+                kept[k].append(v)
 
         def tally(idx, vals):
             return np.bincount((rows * T + idx[None, :]).ravel(), weights=vals.ravel(), minlength=n * T).reshape(n, T)
@@ -410,6 +427,12 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
     result = {"table": table, "points": pts, "tallies": tallies, "lineups": lu, "teams": teams, "seeds": seeds,
               "start_date": start, "trades": trades, "sit_out": list(sit_out), "n_sims": n_sims, "seed": seed,
               "games_simulated": int(sim.sum()), "games_locked": int((sched["played"] & (sched["date"] < start)).sum())}
+    if keep_games:
+        g_ids = np.concatenate([lu.loc[starter_rows, "playerId"].to_numpy(), lu.loc[backup_rows, "playerId"].to_numpy()])
+        result["games"] = {"rows": games.index.to_numpy(), "home_goalie": g_ids[gh], "away_goalie": g_ids[ga],
+                           **{k: np.concatenate(v) for k, v in kept.items()}}
+    if keep_z:
+        result.update({"z": np.concatenate(kept_z), "z_ids": pool_ids, "draw_size": sd})
     if stat_lines:
         left = pd.concat([games["home"], games["away"]]).value_counts().reindex(teams).fillna(0)
         skl = lu.loc[sk_rows, ["playerId", "name", "team", "position", "group"]].reset_index(drop=True)

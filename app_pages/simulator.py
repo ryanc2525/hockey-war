@@ -98,8 +98,11 @@ def run(stamp, start_date, trade_ids, sit_out, n_sims, seed, stat_lines=True, ca
     else:
         bundle, upd, _ = load_update(stamp, *cache)
         updated = upd if use_update else None
+    # One season with the update on: the seed also picks which of each updated player's draws he gets, so
+    # "Simulate again" re-rolls his season too (seed 0 = the first draw, as before). 10,000 seasons: unchanged.
+    shift = seed if n_sims == 1 and updated is not None else 0
     res = SE.run_scenario(bundle, start_date=start_date, trade_ids=list(trade_ids), sit_out=list(sit_out),
-                          n_sims=n_sims, seed=seed, stat_lines=stat_lines, updated=updated)
+                          n_sims=n_sims, seed=seed, stat_lines=stat_lines, updated=updated, update_shift=shift)
     out = {k: res[k] for k in ["table", "lineups", "teams", "start_date", "trades", "sit_out", "n_sims", "seed",
                                "games_simulated", "games_locked", "seconds"]}
     out["seeds"] = res["seeds"][0] if n_sims == 1 else None

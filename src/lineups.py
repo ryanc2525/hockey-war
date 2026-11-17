@@ -296,7 +296,7 @@ def starter_share(usage, seasons):
     return shares, float(shares.median())
 
 
-def assign_minutes(lineup, slots, share, col="scaled", extras=False, own_weight=0.0):
+def assign_minutes(lineup, slots, share, col="scaled", extras=False, own_weight=0.0, own_weight_by_player=None):
     """
     minutes_per_game for every player in a lineup table (from pick_lineup):
     skaters by their rank in the slot table's column `col` ("scaled" for 2026-27, "raw" in the backtest);
@@ -306,6 +306,9 @@ def assign_minutes(lineup, slots, share, col="scaled", extras=False, own_weight=
     own_weight (notebook 24; a number, or {"F": ..., "D": ...}): blend the slot with each skater's own recent ice
     time per game, (1 - own_weight) x slot + own_weight x own (players without their own usage keep the slot). Then each team's
     dressed forwards and defensemen are rescaled so they still add up to the slots' total. 0 = notebook 23.
+    own_weight_by_player (notebook 30, franchise mode): a weight per row (a Series on lineup's index; rows left out
+    or blank keep their group's weight). Players a franchise lineup moved get 0, so their minutes follow the slot.
+    None (the default) changes nothing.
     """
     out = pd.Series(0.0, index=lineup.index)
     for g in ["F", "D"]:
@@ -313,10 +316,12 @@ def assign_minutes(lineup, slots, share, col="scaled", extras=False, own_weight=
         tab = slots.loc[g][col].dropna()                      # minutes by rank
         out[m] = lineup.loc[m, "rank"].clip(upper=tab.index.max()).map(tab).to_numpy()
     weights = own_weight if isinstance(own_weight, dict) else {"F": own_weight, "D": own_weight}
-    if any(weights.values()):
+    if any(weights.values()) or own_weight_by_player is not None:
         sk = (lineup["group"] != "G") & (out > 0)
         own = lineup["toi_input"].where(lineup["toi_rule"] == "own", out)
         wt = lineup["group"].map(weights).fillna(0.0)
+        if own_weight_by_player is not None:
+            wt = pd.Series(own_weight_by_player, dtype=float).reindex(lineup.index).fillna(wt)
         blend = (1 - wt) * out + wt * own
         keys = [c for c in ["season", "team"] if c in lineup] + ["group"]
         dr = sk & lineup["dressed"]
