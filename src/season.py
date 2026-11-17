@@ -283,7 +283,8 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
       lineups: a ready-made lineup table (franchise.apply_overrides) used instead of building one from trades and
         sit-outs (which are still recorded in the result).
       keep_games: also return every simulated game ("games": schedule rows, home/away goals as the standings count
-        them, ot, so, and each side's starting goalie). Meant for a few seasons, not 10,000.
+        them, ot, so, and each side's starting goalie). Meant for a few seasons, not 10,000. With stat_lines, also
+        each side's empty-net goals (home_en: goals the home team scored into an empty net; notebook 32).
       keep_z: also return every pool player's draw ("z": n_sims x players, "z_ids": their playerIds) and each lineup
         row's draw size ("draw_size").
       update_shift: with `updated`, season k uses column (k + update_shift) of a player's updated draws. 0 = before;
@@ -328,6 +329,8 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
 
     tallies = {k: np.zeros((n_sims, T)) for k in ["points", "wins", "otl", "rw", "row", "gd"]}
     kept = {k: [] for k in ["home_goals", "away_goals", "ot", "so"]} if keep_games else None
+    if keep_games and stat_lines:                              # notebook 32: each game's empty-net goals too
+        kept.update({"home_en": [], "away_en": []})
     kept_z = [] if keep_z else None
     if stat_lines:
         # Each dressed skater's team, his place on it (0-17), his rates, minutes and draw pool
@@ -394,6 +397,9 @@ def run_scenario(bundle, start_date=None, trade_ids=None, sit_out=(), n_sims=100
             # team's late goals) and the shootout "goal" don't count against him.
             en_h = late["late_home"] * (late["margin"] > 0)
             en_a = late["late_away"] * (late["margin"] < 0)
+            if keep_games:
+                kept["home_en"].append(en_h)
+                kept["away_en"].append(en_a)
 
             def gtally(idx, vals):
                 return np.bincount((rows * 2 * T + idx[None, :]).ravel(), weights=np.asarray(vals, float).ravel(),

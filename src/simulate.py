@@ -18,7 +18,7 @@ How one game is simulated (all vectorized: thousands of seasons at once):
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-from scipy.stats import skellam
+from scipy.stats import skellam, poisson
 
 from development import age_bucket, draft_bucket, luck_share, expected_sd
 
@@ -319,6 +319,45 @@ def simulate_games(home, away, skater, goalie, settings, rng, bonus=None, goalie
                 "margin": m}
         return hg, ag, ot, hg > ag, late
     return hg, ag, ot, hg > ag
+
+
+def game_probabilities(edge, settings, max_margin=20):
+    """
+    Notebook 32: the exact chances for one game, with no simulation, from the same pieces simulate_games uses.
+    edge: the home team's strength edge in normal goals per game (a_s x skater gap + a_g x goalie gap + bonus gap;
+    one value or an array). Normal goals are Poisson, so their margin is Skellam (same 0.05 floor on each mean);
+    the late table then adds the leader's and trailer's late goals (leader = home in a tie, as in the simulator);
+    a tie after regulation goes to OT/SO, won by home with the same logistic chance.
+    Returns a dict of arrays: home_reg (home wins in regulation), away_reg, ot (goes past regulation), ot_home
+    (home wins OT/SO, given OT), home_win, away_win.
+    """
+    s = settings
+    e = np.atleast_1d(np.asarray(edge, dtype=float))
+    diff = s["home"] + e
+    mu_h = np.clip((s["total"] + diff) / 2, 0.05, None)
+    mu_a = np.clip((s["total"] - diff) / 2, 0.05, None)
+    ms = np.arange(-max_margin, max_margin + 1)
+    # The Skellam chances, built from the two Poisson distributions (the same numbers as scipy's skellam.pmf,
+    # much faster): P(margin = m) = sum over k of P(home = k + m) x P(away = k)
+    k = np.arange(0, 3 * max_margin + 1)
+    ph, pa = poisson.pmf(k[None, :], mu_h[:, None]), poisson.pmf(k[None, :], mu_a[:, None])
+    pm = np.zeros((len(e), len(ms)))
+    for j, m in enumerate(ms):
+        if m >= 0:
+            pm[:, j] = (ph[:, m:] * pa[:, :len(k) - m]).sum(1)
+        else:
+            pm[:, j] = (ph[:, :len(k) + m] * pa[:, -m:]).sum(1)
+    pm = pm / pm.sum(1, keepdims=True)                     # the margins beyond +-max_margin are negligible
+    home_reg, tie = np.zeros(len(e)), np.zeros(len(e))
+    for j, m in enumerate(ms):
+        L, T, p = s["late"][min(abs(m), MAX_MARGIN)]
+        final = m + (L - T) if m >= 0 else m - (L - T)
+        home_reg += pm[:, j] * p[final > 0].sum()
+        tie += pm[:, j] * p[final == 0].sum()
+    ot_home = 1 / (1 + np.exp(-(s["ot_b0"] + s["ot_b1"] * e)))
+    away_reg = 1 - home_reg - tie
+    return {"home_reg": home_reg, "away_reg": away_reg, "ot": tie, "ot_home": ot_home,
+            "home_win": home_reg + tie * ot_home, "away_win": away_reg + tie * (1 - ot_home)}
 
 
 def simulate_game(home_skater, away_skater, home_goalie, away_goalie, settings, n=1, seed=None):

@@ -103,8 +103,10 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   an end date, or the rest of the season; every team plays the window; seeds/odds only for a full season),
   story (one seeded season: game log, record, standings, lines two ways = range only and season to date via
   season_lines, draws table for notebook 31) and projection (10,000). Minutes rule "moved" (Ryan's, default):
-  players whose slot changed get 100% slot minutes, others keep the 75/25 blend, then F/D totals rescaled; "blend"
-  and "slot" kept for comparison. No chemistry. Errors block (slots, duplicates, not in the team's pool, goalie <->
+  players who changed LINE (F1-F3 = line 1 ... F10-F12) or PAIR (D1-D2, D3-D4, D5-D6), or weren't dressed, get
+  100% slot minutes, others keep the 75/25 blend, then F/D totals rescaled; "blend" and "slot" kept for comparison.
+  Minutes follow a "minutes rank" (notebook 32): unmoved players keep their baseline rank, moved ones take the
+  unit's remaining ranks in slot order, so reordering inside a line or pair changes nobody's minutes (all rules). No chemistry. Errors block (slots, duplicates, not in the team's pool, goalie <->
   skater, share outside 0-1); warnings don't (< 4 centers, out of position, call-ups). Add-only options:
   run_scenario(lineups=, keep_games=, keep_z=, update_shift=) and assign_minutes(own_weight_by_player=); defaults
   checked bit for bit against the committed versions. A story passes its seed as update_shift, and so does the
@@ -127,6 +129,16 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   d_rank_prior). The engine's own number stays in engine_ovr_after. Calibration verdict: spread matches real history,
   average about 0.4 OVR too high (season part; not tuned). Reserved path data/progression_2026-27.csv (ignored).
   Notebook 31 writes nothing.
+- src/boxscore.py + notebook 32 (box scores, engine only): split_story(story, seed) = per-game player lines and goal
+  list for a one-season story: each player's range goals shuffled into his team's games (both totals exact; same
+  statistics as goal by goal, fixed lineups), assists 0-2 per goal from notebook 27's mix given the team total,
+  never the scorer, two different players (random fill, max-flow fallback, "impossible" handling counted); starting
+  goalies' GA (no SO/empty-net) and decision; real games before the start use real_games (no goal list).
+  run_scenario keeps home_en/away_en per game with keep_games + stat_lines (add-only). box_score(split, game_id).
+  simulate.game_probabilities(edge, settings) (add-only): exact home/away/OT chances (Poisson-built Skellam + late
+  table + OT logistic). win_probabilities(inputs, team, ...) = chances per game averaged over the same 10,000 draws
+  (+ "at projection"); check_against_runs. calendar(games, team, month, probs); season_games for projection mode.
+  No periods, goal times, shots, +/-. Reserved path data/box_scores_2026-27.csv (ignored). Notebook 32 writes nothing.
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).

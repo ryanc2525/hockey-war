@@ -230,11 +230,14 @@ def apply_overrides(lineups, bundle, overrides=None, goalie_share=None, minutes_
     """
     The lineups with franchise changes, and the matching backup-goalie games. Returns (lineups, goalie_starts,
     warnings). Raises ValueError (listing every problem) if check_overrides finds errors.
-      overrides: team, slot, playerId rows (a team with overrides lists all 20 slots). Slot number = rank, and
-        minutes follow rank exactly as lineups.assign_minutes does, under minutes_rule:
-          "moved" (Ryan's rule, the default): a player whose slot changed (a newly dressed player included) gets
-            100% slot minutes; everyone else keeps the 75/25 blend of slot and his own recent ice time; then the
-            team's forwards and defensemen are rescaled to the slot totals;
+      overrides: team, slot, playerId rows (a team with overrides lists all 20 slots). Slot number = rank (the
+        display order). Minutes follow a "minutes rank" (notebook 32): a player who stays in his line (F1-F3 = line
+        1 ... F10-F12 = line 4) or pair (D1-D2, D3-D4, D5-D6) keeps his baseline rank, so reordering inside a line
+        changes nobody's minutes; players who moved take the unit's remaining ranks in slot order. Then
+        lineups.assign_minutes, under minutes_rule:
+          "moved" (Ryan's rule, the default): a player who changed line or pair (a newly dressed player included)
+            gets 100% slot minutes; everyone else keeps the 75/25 blend of slot and his own recent ice time; then
+            the team's forwards and defensemen are rescaled to the slot totals;
           "blend": everyone keeps the 75/25 blend (notebook 24); "slot": the whole team gets slot minutes only.
         A skater out of position gets his slot's minutes but keeps his own value and random draw.
       goalie_share: {team: starter's share of games}. That team's goalies play 60 x share and 60 x (1 - share)
@@ -253,10 +256,28 @@ def apply_overrides(lineups, bundle, overrides=None, goalie_share=None, minutes_
     o = overrides if overrides is not None else pd.DataFrame(columns=OVERRIDE_COLS)
     changed = sorted(set(o["team"]))
     weights = pd.Series(np.nan, index=lu.index)
+    minutes_rank = lu["rank"].astype(float).copy()
     for team in changed:
         rows = lu.index[lu["team"] == team]
         new_slot = lu.loc[rows, "playerId"].map(o[o["team"] == team].set_index("playerId")["slot"])
-        moved = (new_slot.fillna("extra") != lu.loc[rows, "slot"]).to_numpy()
+        # Line or pair before and after (notebook 32): "moved" = a different unit, or not dressed before
+        base_dressed = lu.loc[rows, "dressed"].astype(bool)
+        base_unit = pd.Series([f"{g}{(int(r) - 1) // LINE_SIZE[g] + 1}" if d else None for g, r, d in
+                               zip(lu.loc[rows, "group"], lu.loc[rows, "rank"], base_dressed)], index=rows)
+        new_unit = pd.Series([f"{_slot_group(x)}{(_slot_number(x) - 1) // LINE_SIZE[_slot_group(x)] + 1}"
+                              if isinstance(x, str) else None for x in new_slot], index=rows)
+        moved = (new_slot.notna() & (base_unit != new_unit)).to_numpy()
+        for unit in sorted(set(new_unit.dropna())):
+            members = new_unit.index[new_unit == unit]
+            g, size = unit[0], LINE_SIZE[unit[0]]
+            first = (int(unit[1:]) - 1) * size + 1
+            keep = [r for r in members if not moved[rows.get_loc(r)]]
+            free = sorted(set(range(first, first + size)) - {int(lu.loc[r, "rank"]) for r in keep})
+            mv = sorted([r for r in members if moved[rows.get_loc(r)]], key=lambda r: _slot_number(new_slot[r]))
+            for r in keep:
+                minutes_rank[r] = lu.loc[r, "rank"]
+            for r, k in zip(mv, free):
+                minutes_rank[r] = k
         lu.loc[rows, "dressed"] = new_slot.notna().to_numpy()
         lu.loc[rows, "slot"] = new_slot.fillna("extra").to_numpy()
         # Extras keep their order, after the dressed players of their group
@@ -283,6 +304,7 @@ def apply_overrides(lineups, bundle, overrides=None, goalie_share=None, minutes_
         tmp = lu.loc[m_rows].copy()
         dr = tmp["dressed"].astype(bool)
         tmp.loc[dr, "group"] = tmp.loc[dr, "slot"].map(_slot_group)
+        tmp.loc[dr, "rank"] = minutes_rank[tmp.index[dr]].astype(int).to_numpy()   # minutes follow the minutes rank
         w = weights[m_rows] if minutes_rule != "blend" else None
         lu.loc[m_rows, "minutes_per_game"] = L.assign_minutes(tmp, bundle["slots"], bundle["share"],
                                                               own_weight=SE.OWN_WEIGHT, own_weight_by_player=w)
