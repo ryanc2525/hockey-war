@@ -346,9 +346,10 @@ def window_bundle(bundle, end, goalie_starts):
 # 4. Running the choices
 # ---------------------------------------------------------------------------
 def play(inputs, team, n_games=None, end_date=None, trade_ids=None, sit_out=(), overrides=None, goalie_share=None,
-         minutes_rule="moved", n_sims=10000, seed=0, story=False):
+         minutes_rule="moved", n_sims=10000, seed=0, story=False, keep_z=None):
     """One run with franchise choices: run_scenario on the window, with the franchise lineups. story=True keeps
-    every game and every player's draw, and shifts updated players' draws by the seed (a new seed re-rolls them)."""
+    every game and every player's draw, and shifts updated players' draws by the seed (a new seed re-rolls them).
+    keep_z: keep every player's draw without the games (notebook 31's many-season progression); None = story."""
     B, start = inputs["bundle"], inputs["start"]
     check_start(B, start)
     trades = SE.default_trades(B["trades"], start) if trade_ids is None else sorted(trade_ids)
@@ -357,7 +358,7 @@ def play(inputs, team, n_games=None, end_date=None, trade_ids=None, sit_out=(), 
     rng = game_range(B["schedule"], start, team, n_games, end_date)
     Bw = window_bundle(B, rng["end"], starts)
     res = SE.run_scenario(Bw, start_date=start, trade_ids=trades, sit_out=sit_out, n_sims=n_sims, seed=seed,
-                          stat_lines=True, updated=inputs["updated"], lineups=lu, keep_games=story, keep_z=story,
+                          stat_lines=True, updated=inputs["updated"], lineups=lu, keep_games=story, keep_z=story if keep_z is None else keep_z,
                           update_shift=seed if story else 0)
     res.update({"range": rng, "warnings": warnings, "bundle_used": Bw, "team": team, "ratings": inputs["ratings"],
                 "minutes_rule": minutes_rule, "overrides": overrides, "goalie_share": goalie_share or {}})

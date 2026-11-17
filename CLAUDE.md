@@ -110,6 +110,23 @@ plus Baseball Savant-style player cards ("Almanac"). A projection side ("Forecas
   checked bit for bit against the committed versions. A story passes its seed as update_shift, and so does the
   Simulator tab for one season with the update on (so "Simulate again" re-rolls updated players; 10,000 unchanged). Reserved path for saved overrides:
   data/franchise_lineups_2026-27.csv (ignored; a data/ subfolder would not be). Notebook 30 writes nothing.
+- src/progression.py + notebook 31 (season-end OVR progression): the new rating = the same projection run one season
+  later with the simulated 2026-27 season added to history (dressed players: minutes = real so far + simulated,
+  WAR/60 = the story's season_war60 for the whole season; real WAR so far isn't used). load_engine builds once
+  (about 20 s warm): nb18's prior (development.nb18_skater_model, new) + D shift, nb21's goalie model + shift, nb19's
+  models + NHLe fill, the aging curve, all FROZEN. project_season(E, target, extra) = NHL path (season in the last
+  three) or prospect path (same pre-NHL stats, nothing after 2025-26; project_skater_prospects(season=) is add-only),
+  then nb20's rating rule. reproduce_today: exact for all 2,503 players. story_progression (full-season story only):
+  change + aging part (season at projection: age, experience, window roll, prior) + season part; flags for no NHL
+  minutes, prospects (no new season), real games only, left the projection. progression_many uses straight-line maps
+  (lineups fixed -> rating linear in season WAR/60; checked vs. direct) and franchise.play(keep_z=True) (add-only).
+  Calibration: real_ratings/real_changes on real history (same frozen engine), real_prospect_changes (draft lists from
+  2019). Prospects with no NHL minutes (Ryan's rule, adopted): OVR before + the real average change of a prospect
+  year by age group (18-19, 20-21, 22-23, 24+) and position, from 2024-25 and 2025-26 (E["expected_dev"], built in
+  load_engine), flagged "expected development, not simulated"; rating WAR/60 follows via the inverse scale (D: their
+  d_rank_prior). The engine's own number stays in engine_ovr_after. Calibration verdict: spread matches real history,
+  average about 0.4 OVR too high (season part; not tuned). Reserved path data/progression_2026-27.csv (ignored).
+  Notebook 31 writes nothing.
 - app_pages/simulator.py: the Forecast page's Simulator tab (local only): play one season (standings with seeds,
   leaders, team stat lines, Simulate again) or run 10,000 (odds, player ranges). Reads the bundle +
   data/trades_2026-27.csv, imports season.py only after the files check (the live site has no scipy).

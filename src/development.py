@@ -926,11 +926,14 @@ def nb19_models(history, bios, profiles, careers, nhle_factors, nhle_mult):
 
 
 def project_skater_prospects(players, history, bios_all, all_profiles, nhle_factors, nhle_mult, models,
-                             rookie_range, luck, fill25=None):
+                             rookie_range, luck, fill25=None, season=2026):
     """
     Notebook 19's 2026-27 projection for skaters with (almost) no NHL time. players: playerId and group (F/D).
     all_profiles: profile rows (nhle.load_profiles) that include these players; only finished seasons count.
     fill25: the NHLe given to a player with none (25th percentile by group); computed from `players` if None.
+    season: the season projected (default 2026 = 2026-27, notebook 19). Another season (notebook 31) uses that
+    season's age and experience and the position average of the season before it; pass all_profiles cut to the
+    seasons known by then.
     Returns one row per player (proj_war_60, d_rank_prior, war_60_p10/p50/p90, nhle_ppg, ...) and fill25.
     """
     from nhle import career_totals
@@ -943,7 +946,7 @@ def project_skater_prospects(players, history, bios_all, all_profiles, nhle_fact
                    .agg(**{c: (c, "first") for c in first_cols}, **{c: (c, "sum") for c in ["gp", "goals", "assists", "points"]}))
     nhle_full = best_nhle(careers_all, nhle_factors, nhle_mult, rule="last2")
 
-    sk_p = players[["playerId", "group"]].assign(season=2026)
+    sk_p = players[["playerId", "group"]].assign(season=season)
     pf = skater_features(sk_p, history, bios_all, all_profiles, nhle_full).merge(
         nhle_full[["playerId", "nhle_league", "nhle_season"]], on="playerId", how="left")
     pf["nhle_missing"] = pf["nhle_ppg"].isna()
@@ -951,7 +954,7 @@ def project_skater_prospects(players, history, bios_all, all_profiles, nhle_fact
         fill25 = pf[~pf["nhle_missing"]].groupby("group")["nhle_ppg"].quantile(0.25)
     pf["nhle_filled"] = pf["nhle_ppg"].fillna(pf["group"].map(fill25))
     from forecast import group_average
-    avg25 = group_average(history, 2025)
+    avg25 = group_average(history, season - 1)
 
     out = players[["playerId", "group"]].merge(
         pf[["playerId", "experience", "nhle_ppg", "nhle_missing", "nhle_league", "nhle_season"]], on="playerId", how="left")
@@ -1027,3 +1030,51 @@ def goalie_prior_war_60(rows, gmodel):
     floor = np.where(x["experience"] > 0, gmodel["age_floor"], max(gmodel["age_floor"], gmodel["debut_age"]))
     x["age"] = np.maximum(x["age"], floor)
     return (apply_prior(x, gmodel["final"]) + gmodel["shift"]) / GOALS_PER_WIN
+
+
+# ---------------------------------------------------------------------------
+# 14. Notebook 18's skater prior as a function (notebook 31: progression)
+# ---------------------------------------------------------------------------
+NB18_VERSION, NB18_WEIGHT = "a", 1500                                  # notebook 18, section 4 (chosen on test seasons)
+
+
+def nb18_skater_model(history, bios, profiles, careers, nhle_factors, nhle_mult, target=2026):
+    """
+    Notebook 18's final skater prior, refit the way the notebook does (section 7):
+    - final: prior version (a) (every skater), NHLe rule "last2" with notebook 16's whole-window factors, fit on all
+      target seasons;
+    - shift: the centering shift per group (GAR/60) that keeps the league level of the `target` projection (weighted
+      by last season's minutes) where it is without the prior, found with one test nudge, as in the notebook;
+    - nhle: each skater's NHLe (the table the features use), curve: the aging curve (all seasons).
+    Notebook 31 checks that this reproduces projections_2026-27.csv.
+    """
+    from forecast import project, aging_curve
+    skaters = history[history["group"] != "G"]
+    curve = aging_curve(history, bios)[1]
+    pairs = pd.concat([candidates(history, TARGETS + [target]),
+                       skaters[skaters["season"].isin(TARGETS)][["playerId", "season", "group"]]]).drop_duplicates(["playerId", "season"])
+    nhle_full = best_nhle(careers, nhle_factors, nhle_mult, rule="last2")
+    feat = skater_features(pairs, history, bios, profiles, nhle_full)
+    rows = fit_rows(history, feat, TARGETS)
+    rows = rows[eligible(rows, NB18_VERSION)]
+    final = fit_prior(rows, PRIOR_INPUTS)
+    cand = candidates(history, [target]).merge(feat.drop(columns="group"), on=["playerId", "season"], how="left")
+    el = cand[eligible(cand, NB18_VERSION)]
+    pr = el[["playerId", "season"]].assign(prior_gar_60=apply_prior(el, final).to_numpy())
+
+    mins = history[history["season"] == target - 1].groupby("playerId")["toi"].sum()
+    def level(proj):
+        p = proj[proj["played_last_season"]]
+        return p.groupby("group").apply(lambda d: np.average(d["proj_war_60"], weights=mins.reindex(d.index)),
+                                        include_groups=False)
+    old = level(project(skaters, bios, target, SK_WEIGHTS, SK_REG, AGING, curve))
+    new = level(project(skaters, bios, target, SK_WEIGHTS, SK_REG, AGING, curve, priors=pr, prior_reg=NB18_WEIGHT))
+    shift = {}
+    for g in ["F", "D"]:
+        change = new[g] - old[g]
+        if abs(change) > 0.002:
+            nudge = pr.assign(prior_gar_60=pr["prior_gar_60"] + 0.1)
+            moved = level(project(skaters, bios, target, SK_WEIGHTS, SK_REG, AGING, curve, priors=nudge,
+                                  prior_reg=NB18_WEIGHT))
+            shift[g] = -change / ((moved[g] - new[g]) / 0.1)
+    return {"final": final, "shift": shift, "nhle": nhle_full, "curve": curve}
